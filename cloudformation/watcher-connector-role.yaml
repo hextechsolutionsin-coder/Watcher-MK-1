@@ -1,0 +1,284 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Watcher MK1 — Cross-Account Connector Role
+  
+  Creates an IAM role that allows Watcher MK1 to monitor your AWS environment
+  and execute approved security response actions. You control exactly what
+  Watcher can do by choosing the permission tier below.
+
+# ============================================================================
+# Parameters
+# ============================================================================
+
+Parameters:
+
+  WatcherAccountId:
+    Type: String
+    Description: >
+      The AWS Account ID of your Watcher MK1 deployment.
+      Watcher will assume this role from that account.
+    AllowedPattern: '[0-9]{12}'
+    ConstraintDescription: Must be a 12-digit AWS account ID.
+
+  PermissionTier:
+    Type: String
+    Default: ReadAndRespond
+    AllowedValues:
+      - ReadOnly
+      - ReadAndRespond
+      - FullResponse
+    Description: >
+      ReadOnly       — Watcher monitors and alerts only. No automated actions.
+      ReadAndRespond — Watcher can disable IAM keys, block IPs, stop instances (recommended).
+      FullResponse   — Full response capability including S3 remediation and Lambda throttling.
+
+  ExternalId:
+    Type: String
+    Description: >
+      A secret token provided by Watcher MK1 during connector registration.
+      Prevents confused deputy attacks. Copy this from the Watcher console.
+    MinLength: 8
+
+# ============================================================================
+# Conditions
+# ============================================================================
+
+Conditions:
+  IsReadAndRespond: !Or
+    - !Equals [!Ref PermissionTier, ReadAndRespond]
+    - !Equals [!Ref PermissionTier, FullResponse]
+  IsFullResponse: !Equals [!Ref PermissionTier, FullResponse]
+
+# ============================================================================
+# Resources
+# ============================================================================
+
+Resources:
+
+  # ── Cross-Account IAM Role ─────────────────────────────────────────────────
+
+  WatcherConnectorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: WatcherMK1-ConnectorRole
+      Description: >
+        Allows Watcher MK1 to monitor this AWS account and execute
+        approved security response actions.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${WatcherAccountId}:root'
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+      MaxSessionDuration: 3600
+      Tags:
+        - Key: ManagedBy
+          Value: WatcherMK1
+        - Key: Purpose
+          Value: SecurityMonitoring
+
+  # ── Read Policy (all tiers) ────────────────────────────────────────────────
+
+  WatcherReadPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: WatcherMK1-ReadPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # CloudTrail — read API activity logs
+          - Sid: CloudTrailRead
+            Effect: Allow
+            Action:
+              - cloudtrail:LookupEvents
+              - cloudtrail:GetTrailStatus
+              - cloudtrail:DescribeTrails
+              - cloudtrail:ListTrails
+            Resource: '*'
+
+          # GuardDuty — read threat findings
+          - Sid: GuardDutyRead
+            Effect: Allow
+            Action:
+              - guardduty:GetFindings
+              - guardduty:ListFindings
+              - guardduty:ListDetectors
+              - guardduty:GetDetector
+            Resource: '*'
+
+          # Security Hub — read aggregated findings
+          - Sid: SecurityHubRead
+            Effect: Allow
+            Action:
+              - securityhub:GetFindings
+              - securityhub:ListFindings
+              - securityhub:DescribeHub
+            Resource: '*'
+
+          # AWS Config — read configuration changes
+          - Sid: ConfigRead
+            Effect: Allow
+            Action:
+              - config:GetResourceConfigHistory
+              - config:DescribeConfigRules
+              - config:DescribeConfigRuleEvaluationStatus
+              - config:ListDiscoveredResources
+            Resource: '*'
+
+          # IAM — read user and key information
+          - Sid: IAMRead
+            Effect: Allow
+            Action:
+              - iam:GetUser
+              - iam:ListUsers
+              - iam:ListAccessKeys
+              - iam:ListAttachedUserPolicies
+              - iam:ListUserPolicies
+              - iam:GetUserPolicy
+              - iam:SimulatePrincipalPolicy
+            Resource: '*'
+
+          # EC2 — read instance and network state
+          - Sid: EC2Read
+            Effect: Allow
+            Action:
+              - ec2:DescribeInstances
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeVpcs
+              - ec2:DescribeSubnets
+              - ec2:DescribeNetworkInterfaces
+            Resource: '*'
+
+          # S3 — read bucket configuration
+          - Sid: S3Read
+            Effect: Allow
+            Action:
+              - s3:GetBucketPolicy
+              - s3:GetBucketAcl
+              - s3:GetPublicAccessBlock
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+            Resource: '*'
+      Roles:
+        - !Ref WatcherConnectorRole
+
+  # ── Response Policy (ReadAndRespond + FullResponse tiers) ─────────────────
+
+  WatcherResponsePolicy:
+    Type: AWS::IAM::Policy
+    Condition: IsReadAndRespond
+    Properties:
+      PolicyName: WatcherMK1-ResponsePolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # IAM — disable/enable access keys, attach deny policies
+          - Sid: IAMResponse
+            Effect: Allow
+            Action:
+              - iam:UpdateAccessKey
+              - iam:AttachUserPolicy
+              - iam:DetachUserPolicy
+            Resource: '*'
+
+          # EC2 — stop instances, modify security groups
+          - Sid: EC2Response
+            Effect: Allow
+            Action:
+              - ec2:StopInstances
+              - ec2:StartInstances
+              - ec2:RevokeSecurityGroupIngress
+              - ec2:AuthorizeSecurityGroupIngress
+              - ec2:RevokeSecurityGroupEgress
+              - ec2:CreateSnapshot
+            Resource: '*'
+
+          # GuardDuty — create IP blocklists
+          - Sid: GuardDutyResponse
+            Effect: Allow
+            Action:
+              - guardduty:CreateIPSet
+              - guardduty:UpdateIPSet
+              - guardduty:DeleteIPSet
+            Resource: '*'
+
+          # Security Hub — update finding workflow status
+          - Sid: SecurityHubResponse
+            Effect: Allow
+            Action:
+              - securityhub:UpdateFindings
+            Resource: '*'
+      Roles:
+        - !Ref WatcherConnectorRole
+
+  # ── Full Response Policy (FullResponse tier only) ─────────────────────────
+
+  WatcherFullResponsePolicy:
+    Type: AWS::IAM::Policy
+    Condition: IsFullResponse
+    Properties:
+      PolicyName: WatcherMK1-FullResponsePolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # S3 — remediate public exposure
+          - Sid: S3Response
+            Effect: Allow
+            Action:
+              - s3:PutBucketPolicy
+              - s3:PutBucketAcl
+              - s3:PutPublicAccessBlock
+            Resource: '*'
+
+          # Lambda — throttle compromised functions
+          - Sid: LambdaResponse
+            Effect: Allow
+            Action:
+              - lambda:PutFunctionConcurrency
+              - lambda:DeleteFunctionConcurrency
+              - lambda:GetFunction
+            Resource: '*'
+
+          # RDS — stop compromised databases (requires explicit approval)
+          - Sid: RDSResponse
+            Effect: Allow
+            Action:
+              - rds:StopDBInstance
+              - rds:StartDBInstance
+              - rds:DescribeDBInstances
+            Resource: '*'
+      Roles:
+        - !Ref WatcherConnectorRole
+
+# ============================================================================
+# Outputs
+# ============================================================================
+
+Outputs:
+
+  RoleArn:
+    Description: >
+      Copy this Role ARN into Watcher MK1 when registering your connector.
+    Value: !GetAtt WatcherConnectorRole.Arn
+    Export:
+      Name: WatcherMK1-ConnectorRoleArn
+
+  RoleName:
+    Description: The name of the created IAM role.
+    Value: !Ref WatcherConnectorRole
+
+  PermissionTier:
+    Description: The permission tier this role was created with.
+    Value: !Ref PermissionTier
+
+  Instructions:
+    Description: Next steps after stack creation.
+    Value: !Sub >
+      Stack created successfully. Copy the RoleArn output above and register
+      your connector in Watcher MK1: POST /api/v1/connectors with
+      { "role_arn": "<RoleArn>", "account_id": "${AWS::AccountId}",
+        "regions": ["${AWS::Region}"] }

@@ -1,0 +1,44 @@
+{
+  "name": "watcher-mk1",
+  "version": "1.0.0",
+  "description": "AI-powered autonomous cybersecurity agent SaaS platform",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/",
+    "server": "npx tsx src/server/index.ts"
+  },
+  "keywords": [
+    "cybersecurity",
+    "autonomous",
+    "threat-detection",
+    "siem"
+  ],
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.9.1",
+    "fast-check": "^3.17.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.600.0",
+    "@aws-sdk/client-cloudtrail": "^3.600.0",
+    "@aws-sdk/client-config-service": "^3.600.0",
+    "@aws-sdk/client-ec2": "^3.600.0",
+    "@aws-sdk/client-guardduty": "^3.600.0",
+    "@aws-sdk/client-iam": "^3.600.0",
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@aws-sdk/client-securityhub": "^3.600.0",
+    "@aws-sdk/client-sts": "^3.600.0",
+    "@aws-sdk/credential-providers": "^3.600.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "tsx": "^4.22.3"
+  }
+}
