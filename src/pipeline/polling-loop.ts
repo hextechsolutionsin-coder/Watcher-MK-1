@@ -15,7 +15,7 @@
 
 import { CloudTrailPoller, GuardDutyPoller, SecurityHubPoller } from '../connectors/aws-connector.js';
 import { EventPipeline } from './event-pipeline.js';
-import { addIncident, addTimelineEvent, addAction, addPolledEvent, store } from '../server/store.js';
+import { addIncident, addTimelineEvent, addAction, addPolledEvent, store, getIncidentById } from '../server/store.js';
 import { AwsDataSource, type RawAwsEvent } from '../types/index.js';
 import type { PipelineResult } from './event-pipeline.js';
 import {
@@ -25,6 +25,8 @@ import {
   getCorrelatorStats,
 } from './event-correlator.js';
 import { setWatcherAccountId } from './suppressions.js';
+import { DiscordNotificationChannel } from '../response/discord-notifier.js';
+import { NotificationDispatcher } from '../response/notification-dispatcher.js';
 
 // ============================================================================
 // Write pipeline results to the UI store
@@ -115,16 +117,13 @@ async function sendDiscordAlert(
   if (!webhookUrl || !assessment) return;
 
   try {
-    const { DiscordNotificationChannel } = await import('../response/discord-notifier.js');
-    const { NotificationDispatcher } = await import('../response/notification-dispatcher.js');
-
     const channel = new DiscordNotificationChannel(
       webhookUrl,
       process.env['DASHBOARD_URL'] ?? 'http://localhost:5173'
     );
 
     const dispatcher = new NotificationDispatcher({
-      writeEntry: async () => {}, // lightweight — no audit log for notifications
+      writeEntry: async () => {},
     });
 
     await dispatcher.dispatch(
@@ -342,7 +341,7 @@ async function pollConnector(
 
               // Inject existing incident context into the raw event so the AI knows about it
               if (decision.existing_incident_id) {
-                const existingIncident = store.incidents.find((i) => i.id === decision.existing_incident_id);
+                const existingIncident = getIncidentById(decision.existing_incident_id);
                 if (existingIncident) {
                   (event.raw_payload as any)['_watcher_existing_incident'] = {
                     id: existingIncident.id,

@@ -17,7 +17,7 @@
  */
 
 import type { RawAwsEvent } from '../types/index.js';
-import { store } from '../server/store.js';
+import { store, getIncidentById } from '../server/store.js';
 import { shouldSuppress, addSuppression } from './suppressions.js';
 
 // ============================================================================
@@ -197,8 +197,8 @@ function getMostRecentActiveIncident(actorArn: string): string | null {
     // Check TTL
     if (now - entry.created_at > ACTOR_INCIDENT_TTL_MS) continue;
 
-    // Verify incident still exists and is open
-    const incident = store.incidents.find((inc) => inc.id === entry.incident_id);
+    // Verify incident still exists and is open — O(1) via index
+    const incident = getIncidentById(entry.incident_id);
     if (!incident || incident.status === 'RESOLVED' || incident.status === 'FALSE_POSITIVE') continue;
 
     return entry.incident_id;
@@ -328,20 +328,20 @@ export function appendToIncident(incidentId: string, event: RawAwsEvent): void {
   const eventTime = String(payload['eventTime'] ?? new Date().toISOString());
   const eventId = String(payload['eventID'] ?? `evt-${Date.now()}`);
 
-  const idx = store.incidents.findIndex((i) => i.id === incidentId);
-  if (idx === -1) return;
+  // O(1) lookup via index instead of O(n) findIndex
+  const incident = getIncidentById(incidentId);
+  if (!incident) return;
 
-  store.incidents[idx]!.evidence = [
-    ...(store.incidents[idx]!.evidence ?? []),
-    {
-      connector_id: event.connector_id,
-      attack_surface: 'CLOUD_IAM',
-      raw_event_id: eventId,
-      description: `${eventName} at ${eventTime}`,
-      timestamp: eventTime,
-    },
-  ];
-  store.incidents[idx]!.updated_at = new Date().toISOString();
+  // push is O(1) — spread was creating a new array copy every time
+  if (!incident.evidence) incident.evidence = [];
+  incident.evidence.push({
+    connector_id: event.connector_id,
+    attack_surface: 'CLOUD_IAM',
+    raw_event_id: eventId,
+    description: `${eventName} at ${eventTime}`,
+    timestamp: eventTime,
+  });
+  incident.updated_at = new Date().toISOString();
 }
 
 // ============================================================================

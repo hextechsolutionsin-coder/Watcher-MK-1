@@ -4,6 +4,10 @@
  * When DB_ENABLED=true, write operations are mirrored to PostgreSQL.
  * Read operations use the in-memory store for speed (cache-first).
  * On startup with DB_ENABLED=true, the in-memory store is hydrated from the DB.
+ *
+ * Performance notes:
+ * - incidentIndex / actionIndex: O(1) lookups by ID instead of O(n) array scan
+ * - polled_events uses push (O(1)) not unshift (O(n)); newest-first sort on read
  */
 
 import type { PolledEventStatus } from './store.js';
@@ -92,6 +96,15 @@ export const store: Store = {
 };
 
 // =========================================================================
+// O(1) index maps — kept in sync with the arrays above
+// =========================================================================
+
+/** incident.id → array index — O(1) lookup instead of O(n) find */
+const incidentIndex = new Map<string, StoreIncident>();
+/** action.id → StoreAction — O(1) lookup */
+const actionIndex = new Map<string, StoreAction>();
+
+// =========================================================================
 // DB flag
 // =========================================================================
 
@@ -111,13 +124,14 @@ export function getIncidents(params?: { severity?: string; status?: string }): S
 }
 
 export function getIncidentById(id: string): StoreIncident | undefined {
-  return store.incidents.find((i) => i.id === id);
+  return incidentIndex.get(id);
 }
 
 export function addIncident(incident: StoreIncident): void {
   // Prevent duplicates
-  if (store.incidents.some((i) => i.id === incident.id)) return;
+  if (incidentIndex.has(incident.id)) return;
   store.incidents.push(incident);
+  incidentIndex.set(incident.id, incident);
 
   if (dbEnabled()) {
     import('../database/repositories.js').then(({ incidentsRepo }) => {
@@ -140,8 +154,9 @@ export function getActions(params?: { type?: string; outcome?: string }): StoreA
 }
 
 export function addAction(action: StoreAction): void {
-  if (store.actions.some((a) => a.id === action.id)) return;
+  if (actionIndex.has(action.id)) return;
   store.actions.push(action);
+  actionIndex.set(action.id, action);
 
   if (dbEnabled()) {
     import('../database/repositories.js').then(({ actionsRepo }) => {
@@ -157,13 +172,15 @@ export function getPendingApprovals(): StoreAction[] {
 }
 
 export function getActionById(id: string): StoreAction | undefined {
-  return store.actions.find((a) => a.id === id);
+  return actionIndex.get(id);
 }
 
 export function updateAction(id: string, updates: Partial<StoreAction>): StoreAction | undefined {
-  const idx = store.actions.findIndex((a) => a.id === id);
-  if (idx === -1) return undefined;
-  store.actions[idx] = { ...store.actions[idx], ...updates };
+  const action = actionIndex.get(id);
+  if (!action) return undefined;
+
+  // Update in-place on the object (index and array share the same reference)
+  Object.assign(action, updates);
 
   if (dbEnabled()) {
     import('../database/repositories.js').then(({ actionsRepo }) => {
@@ -173,7 +190,7 @@ export function updateAction(id: string, updates: Partial<StoreAction>): StoreAc
     });
   }
 
-  return store.actions[idx];
+  return action;
 }
 
 // =========================================================================
@@ -206,9 +223,11 @@ export function addTimelineEvent(event: StoreTimelineEvent): void {
 const MAX_POLLED_EVENTS = 2000;
 
 export function addPolledEvent(event: StorePolledEvent): void {
-  store.polled_events.unshift(event);
+  // push is O(1) — unshift was O(n) shifting every element
+  store.polled_events.push(event);
   if (store.polled_events.length > MAX_POLLED_EVENTS) {
-    store.polled_events.splice(MAX_POLLED_EVENTS);
+    // Remove oldest (front of array) — O(1) amortized with splice(0,1)
+    store.polled_events.splice(0, store.polled_events.length - MAX_POLLED_EVENTS);
   }
 }
 
@@ -224,7 +243,9 @@ export function getPolledEvents(params?: {
   if (params?.source) results = results.filter((e) => e.source === params.source!.toUpperCase());
   if (params?.incident_id) results = results.filter((e) => e.incident_id === params.incident_id);
   if (params?.event_id) results = results.filter((e) => e.id === params.event_id);
-  return results.slice(0, params?.limit ?? 500);
+  // Return newest first — reverse slice is O(k) where k = limit, not O(n)
+  const limited = results.slice(-(params?.limit ?? 500));
+  return limited.reverse();
 }
 
 export function getPolledEventById(id: string): StorePolledEvent | undefined {
@@ -249,8 +270,8 @@ export async function hydrateFromDatabase(tenantId = 'tenant-001'): Promise<void
     // Load incidents
     const incidents = await incidentsRepo.getByTenant(tenantId) as any[];
     for (const inc of incidents) {
-      if (!store.incidents.some((i) => i.id === inc.id)) {
-        store.incidents.push({
+      if (!incidentIndex.has(inc.id)) {
+        const incident: StoreIncident = {
           id: inc.id,
           tenant_id: inc.tenant_id,
           severity_level: inc.severity ?? 'MEDIUM',
@@ -265,15 +286,17 @@ export async function hydrateFromDatabase(tenantId = 'tenant-001'): Promise<void
           recommended_actions: [],
           created_at: inc.created_at,
           updated_at: inc.updated_at,
-        });
+        };
+        store.incidents.push(incident);
+        incidentIndex.set(incident.id, incident);
       }
     }
 
     // Load actions
     const actions = await actionsRepo.getByTenant(tenantId) as any[];
     for (const act of actions) {
-      if (!store.actions.some((a) => a.id === act.id)) {
-        store.actions.push({
+      if (!actionIndex.has(act.id)) {
+        const action: StoreAction = {
           id: act.id,
           incident_id: act.incident_id,
           tenant_id: act.tenant_id,
@@ -291,7 +314,9 @@ export async function hydrateFromDatabase(tenantId = 'tenant-001'): Promise<void
           rollback_description: act.rollback_spec?.description,
           created_at: act.created_at,
           updated_at: act.updated_at,
-        });
+        };
+        store.actions.push(action);
+        actionIndex.set(action.id, action);
       }
     }
 
