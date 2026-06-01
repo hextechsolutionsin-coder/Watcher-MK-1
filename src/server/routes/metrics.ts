@@ -39,11 +39,22 @@ router.get('/kpis', (_req: Request, res: Response) => {
   const totalResolved = store.incidents.filter((i) => i.status === 'RESOLVED').length;
   const totalIncidents = store.incidents.length;
 
-  // Mean time to detect: average ms from created_at to detection_timestamp
+  // Mean time to detect: time from event occurrence to Watcher detecting it
+  // detection_timestamp = when Watcher detected it
+  // created_at = when the incident record was created (same as detection for us)
+  // For a more meaningful MTTD, we'd need the original event timestamp
+  // For now: use the difference between the first evidence timestamp and detection
   const mttdValues = store.incidents
-    .filter((i) => i.detection_timestamp)
-    .map((i) => new Date(i.detection_timestamp).getTime() - new Date(i.created_at).getTime())
-    .filter((v) => v >= 0);
+    .filter((i) => i.detection_timestamp && (i.evidence ?? []).length > 0)
+    .map((i) => {
+      const firstEvidence = (i.evidence ?? []).sort(
+        (a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      )[0];
+      if (!firstEvidence) return 0;
+      return new Date(i.detection_timestamp).getTime() - new Date((firstEvidence as any).timestamp).getTime();
+    })
+    .filter((v) => v > 0);
+
   const mttdSeconds = mttdValues.length > 0
     ? Math.round(mttdValues.reduce((a, b) => a + b, 0) / mttdValues.length / 1000)
     : 0;

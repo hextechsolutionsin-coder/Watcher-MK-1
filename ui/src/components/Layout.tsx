@@ -9,6 +9,8 @@ import {
   Shield,
   Activity,
   Plug,
+  ShieldOff,
+  Radio,
 } from 'lucide-react';
 import TrustLevelBadge from './TrustLevelBadge';
 import { fetchTrustLevel, fetchApprovals } from '../api/client';
@@ -18,7 +20,9 @@ const navItems = [
   { to: '/', icon: <LayoutDashboard size={18} />, label: 'Dashboard', end: true },
   { to: '/approvals', icon: <ShieldCheck size={18} />, label: 'Approvals' },
   { to: '/actions', icon: <Zap size={18} />, label: 'Actions Log' },
+  { to: '/events', icon: <Radio size={18} />, label: 'Polled Events' },
   { to: '/connectors', icon: <Plug size={18} />, label: 'Connectors' },
+  { to: '/suppressions', icon: <ShieldOff size={18} />, label: 'Suppressions' },
   { to: '/pipeline', icon: <Activity size={18} />, label: 'AI Pipeline' },
   { to: '/executive', icon: <BarChart3 size={18} />, label: 'Executive View' },
 ];

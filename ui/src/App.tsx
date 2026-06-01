@@ -7,6 +7,8 @@ import ActionsLog from './pages/ActionsLog';
 import ExecutiveView from './pages/ExecutiveView';
 import PipelineStatus from './pages/PipelineStatus';
 import Connectors from './pages/Connectors';
+import Suppressions from './pages/Suppressions';
+import PolledEvents from './pages/PolledEvents';
 
 function App() {
   return (
@@ -18,6 +20,8 @@ function App() {
         <Route path="actions" element={<ActionsLog />} />
         <Route path="pipeline" element={<PipelineStatus />} />
         <Route path="connectors" element={<Connectors />} />
+        <Route path="suppressions" element={<Suppressions />} />
+        <Route path="events" element={<PolledEvents />} />
         <Route path="executive" element={<ExecutiveView />} />
       </Route>
     </Routes>

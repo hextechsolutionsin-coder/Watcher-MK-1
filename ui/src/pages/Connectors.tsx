@@ -22,30 +22,27 @@ interface Connector {
 
 // ── Capability descriptions ───────────────────────────────────────────────────
 
-const DATA_SOURCE_INFO: Record<string, { label: string; description: string; icon: React.ReactNode; color: string }> = {
+const DATA_SOURCE_INFO: Record<string, { label: string; description: string; icon: React.ReactNode; color: string; available: boolean }> = {
   CLOUDTRAIL: {
     label: 'CloudTrail',
-    description: 'All AWS API activity — who did what, when, from where',
+    description: 'All AWS API write events — who did what, when, from where',
     icon: <Eye size={14} />,
     color: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20',
+    available: true,
   },
   GUARDDUTY: {
     label: 'GuardDuty',
     description: 'Threat intelligence findings — malicious IPs, credential abuse, crypto mining',
     icon: <Shield size={14} />,
     color: 'text-red-400 bg-red-500/10 border-red-500/20',
+    available: false, // requires paid subscription
   },
   SECURITY_HUB: {
     label: 'Security Hub',
     description: 'Aggregated findings — misconfigurations, vulnerabilities, compliance',
     icon: <AlertTriangle size={14} />,
     color: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
-  },
-  CONFIG: {
-    label: 'AWS Config',
-    description: 'Configuration changes — resource drift, compliance violations',
-    icon: <RefreshCw size={14} />,
-    color: 'text-purple-400 bg-purple-500/10 border-purple-500/20',
+    available: false, // requires paid subscription
   },
 };
 
@@ -76,7 +73,7 @@ function RegisterForm({ onSuccess, onCancel }: RegisterFormProps) {
   const [accountId, setAccountId] = useState('');
   const [tenantId] = useState('tenant-001');
   const [regions, setRegions] = useState('us-east-1');
-  const [sources, setSources] = useState(['CLOUDTRAIL', 'GUARDDUTY', 'SECURITY_HUB']);
+  const [sources, setSources] = useState(['CLOUDTRAIL']);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -132,14 +129,23 @@ function RegisterForm({ onSuccess, onCancel }: RegisterFormProps) {
         <Cloud size={14} className="text-cyan-400 flex-shrink-0" />
         <span className="text-gray-400">Step 1:</span>
         <span className="text-gray-300">Deploy the IAM role in your AWS account</span>
-        <a
-          href="https://console.aws.amazon.com/cloudformation/home#/stacks/create"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="ml-auto flex items-center gap-1 text-cyan-400 hover:text-cyan-300"
-        >
-          Open CloudFormation <ExternalLink size={11} />
-        </a>
+        <div className="ml-auto flex items-center gap-2">
+          <a
+            href="/api/v1/downloads/cloudformation"
+            download="watcher-connector-role.yaml"
+            className="flex items-center gap-1 px-2.5 py-1 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded text-xs hover:bg-cyan-500/30 transition-colors"
+          >
+            <ExternalLink size={11} /> Download Template
+          </a>
+          <a
+            href="https://console.aws.amazon.com/cloudformation/home#/stacks/create"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-gray-400 hover:text-gray-300"
+          >
+            Open CloudFormation <ExternalLink size={11} />
+          </a>
+        </div>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
@@ -187,9 +193,12 @@ function RegisterForm({ onSuccess, onCancel }: RegisterFormProps) {
               <button
                 key={key}
                 type="button"
-                onClick={() => toggleSource(key)}
+                onClick={() => info.available && toggleSource(key)}
+                disabled={!info.available}
                 className={`flex items-center gap-2 p-2.5 rounded-lg border text-left transition-colors ${
-                  sources.includes(key)
+                  !info.available
+                    ? 'border-gray-800 text-gray-600 cursor-not-allowed opacity-50'
+                    : sources.includes(key)
                     ? `${info.color} border-current`
                     : 'border-gray-700 text-gray-500 hover:border-gray-600'
                 }`}
@@ -197,9 +206,11 @@ function RegisterForm({ onSuccess, onCancel }: RegisterFormProps) {
                 {info.icon}
                 <div>
                   <p className="text-xs font-medium">{info.label}</p>
-                  <p className="text-[10px] opacity-70 leading-tight">{info.description.slice(0, 40)}…</p>
+                  <p className="text-[10px] opacity-70 leading-tight">
+                    {info.available ? info.description.slice(0, 40) + '…' : 'Requires paid subscription'}
+                  </p>
                 </div>
-                {sources.includes(key) && <CheckCircle size={12} className="ml-auto flex-shrink-0" />}
+                {info.available && sources.includes(key) && <CheckCircle size={12} className="ml-auto flex-shrink-0" />}
               </button>
             ))}
           </div>
@@ -534,7 +545,7 @@ export default function Connectors() {
               {
                 step: '1',
                 title: 'Deploy IAM Role',
-                desc: 'Run the CloudFormation template in your AWS account. It creates a cross-account IAM role with read + response permissions.',
+                desc: 'Download the CloudFormation template and deploy it in your AWS account. It creates a cross-account IAM role with read + response permissions.',
                 color: 'text-cyan-400',
               },
               {

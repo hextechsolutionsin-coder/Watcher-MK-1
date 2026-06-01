@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getActions } from '../store';
+import { getActions } from '../store.js';
 
 const router = Router();
 

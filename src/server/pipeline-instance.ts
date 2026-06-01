@@ -33,7 +33,6 @@ import type { TrustLevelStore } from '../safety/trust-level.js';
 import type { RollbackStore } from '../execution/rollback-registry.js';
 import type { ExecutionStore } from '../execution/action-executor.js';
 import type { ConnectorCredentials } from '../execution/action-executor.js';
-import type { AwsApiClient } from '../execution/action-executor.js';
 import type { DatabaseClient } from '../memory/memory-store.js';
 
 // ============================================================================
@@ -156,25 +155,15 @@ class InMemoryExecutionStore implements ExecutionStore {
   }
 }
 
-/** No-op AWS API client — logs what would be executed (safe for testing) */
-class LoggingAwsApiClient implements AwsApiClient {
-  async execute(service: string, apiCall: string, params: Record<string, unknown>, roleArn: string) {
-    console.log(`[Action] Would execute: ${service}:${apiCall}`, JSON.stringify(params));
-    console.log(`[Action] Using role: ${roleArn}`);
-    // Return success so the pipeline completes — no real AWS calls yet
-    return {
-      success: true,
-      requestId: `mock-${Date.now()}`,
-      response: { simulated: true },
-    };
-  }
-}
+/** AWS API client — uses real AWS SDK calls via assumed-role credentials */
+import { RealAwsApiClient } from '../connectors/aws-connector.js';
 
-/** No-op connector credentials — returns a placeholder role ARN */
-class NoopConnectorCredentials implements ConnectorCredentials {
+/** Connector credentials — returns the real role ARN from registered connectors */
+class RealConnectorCredentials implements ConnectorCredentials {
   async getRoleArn(connectorId: string, _tenantId: string): Promise<string | null> {
-    // Returns a placeholder — real ARN comes from connector registration
-    return `arn:aws:iam::123456789012:role/WatcherRole-${connectorId}`;
+    const { getConnectors } = await import('../pipeline/polling-loop.js');
+    const connector = getConnectors().find((c) => c.id === connectorId);
+    return connector?.role_arn ?? null;
   }
 }
 
@@ -271,8 +260,76 @@ const memoryProvider: MemoryProvider = {
 
 const toolProvider: ToolCapabilityProvider = {
   async getCapabilitiesForTenant(_tenantId) {
-    // No connectors registered yet — AI will operate in advisory mode
-    return [];
+    // Build tool capabilities from registered connectors
+    const { getConnectors } = await import('../pipeline/polling-loop.js');
+    const { BlastRadius } = await import('../types/index.js');
+    const registeredConnectors = getConnectors();
+
+    if (registeredConnectors.length === 0) return [];
+
+    return registeredConnectors
+      .filter((c) => c.status === 'ACTIVE')
+      .map((c) => ({
+        connector_id: c.id,
+        tenant_id: c.tenant_id,
+        tool_type: 'AWS' as const,
+        account_id: c.account_id,
+        region: c.regions[0] ?? 'us-east-1',
+        readable_sources: c.data_sources,
+        writable_actions: [
+          {
+            action_id: 'aws:iam:disable-access-key',
+            description: 'Disable an IAM access key (revoke without deleting)',
+            aws_service: 'iam',
+            aws_api_call: 'UpdateAccessKey',
+            required_params: ['UserName', 'AccessKeyId', 'Status'],
+            blast_radius: BlastRadius.LOW,
+            reversible: true,
+            rollback_api_call: 'UpdateAccessKey',
+          },
+          {
+            action_id: 'aws:ec2:stop-instance',
+            description: 'Stop an EC2 instance',
+            aws_service: 'ec2',
+            aws_api_call: 'StopInstances',
+            required_params: ['InstanceIds'],
+            blast_radius: BlastRadius.MEDIUM,
+            reversible: true,
+            rollback_api_call: 'StartInstances',
+          },
+          {
+            action_id: 'aws:ec2:revoke-sg-ingress',
+            description: 'Remove an inbound rule from a security group to block traffic',
+            aws_service: 'ec2',
+            aws_api_call: 'RevokeSecurityGroupIngress',
+            required_params: ['GroupId', 'IpPermissions'],
+            blast_radius: BlastRadius.MEDIUM,
+            reversible: true,
+            rollback_api_call: 'AuthorizeSecurityGroupIngress',
+          },
+          {
+            action_id: 'aws:iam:attach-deny-policy',
+            description: 'Attach an explicit deny policy to block all actions for a user',
+            aws_service: 'iam',
+            aws_api_call: 'AttachUserPolicy',
+            required_params: ['UserName', 'PolicyArn'],
+            blast_radius: BlastRadius.MEDIUM,
+            reversible: true,
+            rollback_api_call: 'DetachUserPolicy',
+          },
+          {
+            action_id: 'aws:ec2:create-snapshot',
+            description: 'Create a snapshot of an EBS volume for forensic preservation',
+            aws_service: 'ec2',
+            aws_api_call: 'CreateSnapshot',
+            required_params: ['VolumeId'],
+            blast_radius: BlastRadius.LOW,
+            reversible: false,
+          },
+        ],
+        discovered_at: c.registered_at,
+        last_updated: c.last_poll_at ?? c.registered_at,
+      }));
   },
 };
 
@@ -316,8 +373,8 @@ const trustLevelService = new TrustLevelService(new InMemoryTrustStore());
 const rollbackRegistry = new RollbackRegistry(new InMemoryRollbackStore());
 
 const actionExecutor = new ActionExecutor(
-  new LoggingAwsApiClient(),
-  new NoopConnectorCredentials(),
+  new RealAwsApiClient(),
+  new RealConnectorCredentials(),
   rollbackRegistry,
   auditLog,
   new InMemoryExecutionStore(),

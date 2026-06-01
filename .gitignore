@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+ui/node_modules/
+
+# Build output
+dist/
+ui/dist/
+
+# Environment — NEVER commit these
+.env
+.env.local
+.env.production
+.env.*.local
+
+# AWS credentials
+.aws/
+credentials
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# TypeScript
+*.tsbuildinfo

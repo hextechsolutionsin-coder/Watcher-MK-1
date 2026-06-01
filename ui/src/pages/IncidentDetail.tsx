@@ -1,13 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, ExternalLink, Brain, Loader2, Target, TrendingUp } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Brain, Loader2, Target, TrendingUp, ThumbsUp, ThumbsDown, AlertTriangle as TriangleIcon } from 'lucide-react';
 import SeverityBadge from '../components/SeverityBadge';
 import StatusBadge from '../components/StatusBadge';
 import TimelineEventComponent from '../components/TimelineEvent';
-import { fetchIncidentById, fetchIncidentTimeline } from '../api/client';
+import { fetchIncidentById, fetchIncidentTimeline, submitFeedback } from '../api/client';
 import {
   getIncidentSeverity, getIncidentConfidence, getIncidentDescription,
-  getMitreTechniqueIds, type Incident, type TimelineEvent,
+  getMitreTechniqueIds, SeverityLevel, type Incident, type TimelineEvent,
 } from '../types';
 
 function formatDateTime(timestamp?: string): string {
@@ -171,25 +171,58 @@ export default function IncidentDetail() {
             )}
           </div>
 
-          {/* Evidence (legacy) */}
+          {/* Evidence — correlated events with full details */}
           {incident.evidence && incident.evidence.length > 0 && (
             <div className="glass-panel p-5">
-              <h2 className="text-sm font-semibold text-gray-200 mb-4">Contributing Evidence</h2>
-              <div className="space-y-3">
-                {incident.evidence.map((ev, idx) => (
-                  <div key={idx} className="flex items-start gap-3 p-3 bg-gray-800/50 rounded-lg">
-                    <div className="w-8 h-8 rounded-full bg-cyan-400/10 border border-cyan-400/30 flex items-center justify-center flex-shrink-0">
-                      <ExternalLink size={14} className="text-cyan-400" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm text-gray-200">{ev.description}</p>
-                      <div className="flex items-center gap-3 mt-1.5 text-xs text-gray-500">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-sm font-semibold text-gray-200">
+                  Correlated Events ({incident.evidence.length})
+                </h2>
+                <Link
+                  to={`/events?incident_id=${incident.id}`}
+                  className="flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
+                >
+                  <ExternalLink size={12} />
+                  View in Polled Events
+                </Link>
+              </div>
+              <div className="space-y-2">
+                {(incident.evidence as any[]).map((ev: any, idx: number) => {
+                  const eventName = ev.description?.split(' at ')?.[0] ?? ev.description ?? 'Unknown event';
+                  const eventTime = ev.timestamp ?? ev.description?.split(' at ')?.[1];
+                  const eventId = ev.raw_event_id;
+
+                  return (
+                    <div key={idx} className="p-3 bg-gray-800/50 rounded-lg">
+                      <div className="flex items-center justify-between gap-3 mb-1">
+                        <span className="text-sm font-mono text-gray-200">{eventName}</span>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {eventTime && (
+                            <span className="text-xs text-gray-500">
+                              {new Date(eventTime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                            </span>
+                          )}
+                          {eventId && eventId !== `evt-${Date.now()}` && !eventId.startsWith('evt-') && (
+                            <Link
+                              to={`/events?event_id=${eventId}&incident_id=${incident.id}`}
+                              className="flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300"
+                              title="View full event details"
+                            >
+                              <ExternalLink size={11} />
+                              Details
+                            </Link>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 text-xs text-gray-500">
                         <span>Surface: <span className="text-gray-400">{ev.attack_surface}</span></span>
-                        <span>Connector: <span className="text-gray-400">{ev.connector_id}</span></span>
+                        {ev.raw_event_id && (
+                          <span className="font-mono">ID: {String(ev.raw_event_id).slice(0, 8)}</span>
+                        )}
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -265,7 +298,127 @@ export default function IncidentDetail() {
               </div>
             </div>
           )}
+
+          {/* Analyst Feedback */}
+          <FeedbackPanel incidentId={incident.id} currentStatus={incident.status} onFeedbackSubmitted={() => {
+            // Reload incident data
+            if (id) {
+              Promise.all([fetchIncidentById(id), fetchIncidentTimeline(id)])
+                .then(([inc, tl]) => {
+                  setIncident(inc as Incident);
+                  setTimeline(tl as TimelineEvent[]);
+                })
+                .catch(() => {});
+            }
+          }} />
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Feedback Panel Component ──────────────────────────────────────────────────
+
+interface FeedbackPanelProps {
+  incidentId: string;
+  currentStatus: string;
+  onFeedbackSubmitted: () => void;
+}
+
+function FeedbackPanel({ incidentId, currentStatus, onFeedbackSubmitted }: FeedbackPanelProps) {
+  const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [showSeverityPicker, setShowSeverityPicker] = useState(false);
+  const [notes, setNotes] = useState('');
+
+  if (currentStatus === 'FALSE_POSITIVE') {
+    return (
+      <div className="glass-panel p-4">
+        <p className="text-xs text-gray-500">This incident was marked as a false positive.</p>
+      </div>
+    );
+  }
+
+  if (submitted) {
+    return (
+      <div className="glass-panel p-4 border-l-2 border-l-emerald-500/50">
+        <p className="text-sm text-emerald-400">Feedback submitted. The AI will learn from this.</p>
+      </div>
+    );
+  }
+
+  const handleFeedback = async (verdict: 'TRUE_POSITIVE' | 'FALSE_POSITIVE' | 'SEVERITY_WRONG', correctSeverity?: string) => {
+    setSubmitting(true);
+    try {
+      await submitFeedback(incidentId, {
+        verdict,
+        correct_severity: correctSeverity,
+        notes: notes || undefined,
+        analyst_id: 'analyst-001',
+      });
+      setSubmitted(true);
+      onFeedbackSubmitted();
+    } catch (err) {
+      console.error('Failed to submit feedback:', err);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="glass-panel p-4">
+      <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Analyst Feedback</h3>
+      <p className="text-xs text-gray-500 mb-3">Help the AI learn — was this detection correct?</p>
+
+      <div className="space-y-2 mb-3">
+        <input
+          type="text"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="Optional notes (e.g. 'This is our CI/CD pipeline')"
+          className="w-full bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-lg px-3 py-2 focus:border-cyan-500 focus:outline-none"
+        />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <button
+          onClick={() => handleFeedback('TRUE_POSITIVE')}
+          disabled={submitting}
+          className="flex items-center gap-2 px-3 py-2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-xs hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+        >
+          <ThumbsUp size={12} />
+          Correct Detection
+        </button>
+        <button
+          onClick={() => handleFeedback('FALSE_POSITIVE')}
+          disabled={submitting}
+          className="flex items-center gap-2 px-3 py-2 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg text-xs hover:bg-red-500/20 transition-colors disabled:opacity-50"
+        >
+          <ThumbsDown size={12} />
+          False Positive
+        </button>
+        <button
+          onClick={() => setShowSeverityPicker(!showSeverityPicker)}
+          disabled={submitting}
+          className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-lg text-xs hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+        >
+          <TriangleIcon size={12} />
+          Wrong Severity
+        </button>
+
+        {showSeverityPicker && (
+          <div className="flex flex-wrap gap-1 p-2 bg-gray-800/50 rounded-lg">
+            {Object.values(SeverityLevel).map((level) => (
+              <button
+                key={level}
+                onClick={() => handleFeedback('SEVERITY_WRONG', level)}
+                className="px-2 py-1 text-xs rounded bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors"
+              >
+                {level}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -115,7 +115,6 @@ Resources:
             Effect: Allow
             Action:
               - securityhub:GetFindings
-              - securityhub:ListFindings
               - securityhub:DescribeHub
             Resource: '*'
 
@@ -159,7 +158,7 @@ Resources:
             Action:
               - s3:GetBucketPolicy
               - s3:GetBucketAcl
-              - s3:GetPublicAccessBlock
+              - s3:GetBucketPublicAccessBlock
               - s3:ListAllMyBuckets
               - s3:GetBucketLocation
             Resource: '*'
@@ -231,7 +230,7 @@ Resources:
             Action:
               - s3:PutBucketPolicy
               - s3:PutBucketAcl
-              - s3:PutPublicAccessBlock
+              - s3:PutBucketPublicAccessBlock
             Resource: '*'
 
           # Lambda — throttle compromised functions

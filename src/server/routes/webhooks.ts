@@ -1,10 +1,11 @@
 import { Router, Request, Response } from 'express';
-import { pipeline, incidentStore, approvalWorkflow } from '../pipeline-instance.js';
-import { addIncident, addTimelineEvent, addAction, store } from '../store.js';
+import { pipeline } from '../pipeline-instance.js';
+import { addIncident, addTimelineEvent, addAction } from '../store.js';
 import {
   AttackSurface,
   AwsDataSource,
   type NormalizedEvent,
+  type RawAwsEvent,
 } from '../../types/index.js';
 
 const router = Router();
@@ -12,9 +13,13 @@ const router = Router();
 /**
  * POST /api/v1/webhooks/:tenant_id/ingest
  *
- * Accepts a security event, runs it through the full AI reasoning pipeline:
- *   Normalize → Fast Filter → Context Assembly → Claude AI → Safety Gate
- *   → Approved actions execute / Human-review actions queue for approval
+ * Accepts a raw security event and runs it through the full AI reasoning pipeline.
+ * This is the same path as the polling loop — normalize → AI → incident → approvals.
+ *
+ * Use this for:
+ * - Testing without waiting for the polling cycle
+ * - Integrating external event sources (SIEM, custom scripts)
+ * - Sending pre-formatted CloudTrail events directly
  */
 router.post('/:tenant_id/ingest', async (req: Request, res: Response) => {
   const tenant_id = String(req.params['tenant_id']);
@@ -24,110 +29,126 @@ router.post('/:tenant_id/ingest', async (req: Request, res: Response) => {
     return res.status(400).json({ success: false, error: 'Invalid payload: expected JSON object' });
   }
 
-  if (!payload['event_type']) {
-    return res.status(400).json({ success: false, error: 'Missing required field: event_type' });
+  if (!payload['event_type'] && !payload['eventName']) {
+    return res.status(400).json({ success: false, error: 'Missing required field: event_type or eventName' });
   }
 
   const now = new Date().toISOString();
 
-  // Build a NormalizedEvent from the webhook payload
-  const event: NormalizedEvent = {
-    id: `evt-${Date.now()}`,
-    tenant_id,
-    connector_id: `webhook-${tenant_id}`,
-    account_id: String(payload['account_id'] ?? '000000000000'),
-    region: String(payload['region'] ?? 'us-east-1'),
-    source: AwsDataSource.CLOUDTRAIL,
-    attack_surface: resolveAttackSurface(payload['attack_surface']),
-    event_type: String(payload['event_type']),
-    actor: {
-      type: 'IAM_USER',
-      identifier: String(payload['actor'] ?? 'unknown'),
-      account_id: String(payload['account_id'] ?? '000000000000'),
-    },
-    target: {
-      resource_type: String(payload['resource_type'] ?? 'AWS::IAM::User'),
-      resource_id: String(payload['actor'] ?? 'unknown'),
-      attack_surface: resolveAttackSurface(payload['attack_surface']),
-    },
-    source_ip: payload['source_ip'] ? String(payload['source_ip']) : undefined,
-    user_agent: payload['user_agent'] ? String(payload['user_agent']) : undefined,
-    raw_payload: payload,
-    ingestion_timestamp: now,
-  };
-
   try {
-    console.log(`\n[Pipeline] Processing event: ${event.event_type} from ${event.source_ip ?? 'unknown IP'}`);
+    let result;
 
-    // Run through the full AI reasoning pipeline
-    const result = await pipeline.processNormalizedEvent(event);
+    // If payload looks like a raw CloudTrail event (has eventName, userIdentity),
+    // wrap it as a RawAwsEvent and let the normalizer handle it
+    if (payload['eventName'] && payload['userIdentity']) {
+      const raw: RawAwsEvent = {
+        source: AwsDataSource.CLOUDTRAIL,
+        connector_id: `webhook-${tenant_id}`,
+        tenant_id,
+        account_id: String(payload['recipientAccountId'] ?? payload['account_id'] ?? '000000000000'),
+        region: String(payload['awsRegion'] ?? payload['region'] ?? 'us-east-1'),
+        raw_payload: payload,
+        received_at: now,
+      };
 
-    console.log(`[Pipeline] Done in ${result.processing_ms}ms | threat: ${result.reasoning_response?.is_threat ?? false} | incident: ${result.incident_id ?? 'none'}`);
+      console.log(`[Webhook] Processing raw CloudTrail event: ${payload['eventName']} from ${tenant_id}`);
+      result = await pipeline.processRawEvent(raw);
+    } else {
+      // Normalized event format
+      const event: NormalizedEvent = {
+        id: `evt-${Date.now()}`,
+        tenant_id,
+        connector_id: `webhook-${tenant_id}`,
+        account_id: String(payload['account_id'] ?? '000000000000'),
+        region: String(payload['region'] ?? 'us-east-1'),
+        source: AwsDataSource.CLOUDTRAIL,
+        attack_surface: resolveAttackSurface(payload['attack_surface']),
+        event_type: String(payload['event_type']),
+        actor: {
+          type: 'IAM_USER',
+          identifier: String(payload['actor'] ?? 'unknown'),
+          account_id: String(payload['account_id'] ?? '000000000000'),
+        },
+        target: {
+          resource_type: String(payload['resource_type'] ?? 'AWS::IAM::User'),
+          resource_id: String(payload['resource_id'] ?? payload['actor'] ?? 'unknown'),
+          attack_surface: resolveAttackSurface(payload['attack_surface']),
+        },
+        source_ip: payload['source_ip'] ? String(payload['source_ip']) : undefined,
+        user_agent: payload['user_agent'] ? String(payload['user_agent']) : undefined,
+        raw_payload: payload,
+        ingestion_timestamp: now,
+      };
 
-    // If the AI created an incident, also add it to the legacy store so the UI shows it
-    if (result.incident_id) {
-      const aiIncident = await incidentStore.getById(result.incident_id, tenant_id);
-      if (aiIncident) {
-        // Add to legacy store for UI compatibility
+      console.log(`[Webhook] Processing normalized event: ${event.event_type} from ${event.source_ip ?? 'unknown IP'}`);
+      result = await pipeline.processNormalizedEvent(event);
+    }
+
+    console.log(`[Webhook] Done in ${result.processing_ms}ms | threat: ${result.reasoning_response?.is_threat ?? false} | incident: ${result.incident_id ?? 'none'}`);
+
+    // Write result to the UI store (same as polling loop does)
+    if (result.incident_id && result.reasoning_response?.assessment) {
+      const resp = result.reasoning_response;
+      const assessment = resp.assessment!;
+
+      // Only add if not already in store (webhook may be called multiple times)
+      const { store } = await import('../store.js');
+      const alreadyExists = store.incidents.some((i) => i.id === result.incident_id);
+
+      if (!alreadyExists) {
         addIncident({
-          id: aiIncident.id,
-          tenant_id: aiIncident.tenant_id,
-          severity_level: aiIncident.severity ?? 'MEDIUM',
-          confidence_score: aiIncident.confidence ?? 50,
-          review_required: aiIncident.severity === 'CRITICAL' || aiIncident.severity === 'HIGH',
-          status: aiIncident.status,
-          affected_assets: (aiIncident.affected_assets ?? []).map((a, i) => ({
-            id: `asset-${i}`,
-            class: 'CLOUD_RESOURCE',
-            identifier: typeof a === 'string' ? a : String(a),
-            criticality: 7,
+          id: result.incident_id,
+          tenant_id,
+          severity_level: assessment.severity ?? 'MEDIUM',
+          confidence_score: assessment.confidence ?? 50,
+          review_required: assessment.severity === 'CRITICAL' || assessment.severity === 'HIGH',
+          status: 'OPEN',
+          affected_assets: (assessment.affected_assets ?? []).map((a, i) => ({
+            id: `asset-${i}`, class: 'CLOUD_RESOURCE',
+            identifier: typeof a === 'string' ? a : String(a), criticality: 7,
           })),
-          attack_surface: aiIncident.attack_surface ?? 'CLOUD_IAM',
-          detection_timestamp: aiIncident.detection_timestamp,
+          attack_surface: 'CLOUD_IAM',
+          detection_timestamp: now,
           evidence: [],
-          mitre_technique_ids: (aiIncident.mitre_techniques ?? []).map((t) => t.technique_id),
+          mitre_technique_ids: (assessment.mitre_techniques ?? []).map((t) => t.technique_id),
           recommended_actions: [],
-          created_at: aiIncident.created_at,
-          updated_at: aiIncident.updated_at,
+          created_at: now,
+          updated_at: now,
         });
 
-        // Add AI explanation as timeline event
         addTimelineEvent({
           id: `tl-${Date.now()}`,
-          incident_id: aiIncident.id,
+          incident_id: result.incident_id,
           timestamp: now,
           type: 'detection',
-          title: `AI: ${aiIncident.threat_type ?? 'Threat Detected'}`,
-          description: aiIncident.explanation ?? 'AI reasoning completed.',
+          title: `AI: ${assessment.threat_type}`,
+          description: resp.explanation ?? 'AI reasoning completed.',
           actor: 'Claude Sonnet 4.6',
         });
 
-        // Add approval queue items for human-review actions
-        const pending = await approvalWorkflow.getPendingByTenant(tenant_id);
-        for (const req of pending) {
-          if (req.incident_id === result.incident_id) {
-            for (const action of req.actions) {
-              addAction({
-                id: action.id,
-                incident_id: aiIncident.id,
-                tenant_id,
-                action_type: action.tool_action_id.split(':').pop()?.toUpperCase() ?? action.description.toUpperCase(),
-                status: 'PENDING_APPROVAL',
-                severity_level: aiIncident.severity ?? 'MEDIUM',
-                retry_count: 0,
-                affected_asset: {
-                  id: 'asset-ai',
-                  class: 'CLOUD_RESOURCE',
-                  identifier: action.api_params['AccessKeyId']?.toString()
-                    ?? action.api_params['InstanceIds']?.toString()
-                    ?? action.api_params['Bucket']?.toString()
-                    ?? event.target.resource_id,
-                  criticality: 7,
-                },
-                created_at: now,
-                updated_at: now,
-              });
-            }
+        if (resp.action_plan) {
+          for (const action of resp.action_plan.actions) {
+            const targetIdentifier =
+              String(action.api_params?.['UserName'] ?? '') ||
+              String(action.api_params?.['InstanceIds']?.[0] ?? '') ||
+              (assessment.affected_assets[0] ?? 'unknown');
+
+            addAction({
+              id: action.id,
+              incident_id: result.incident_id,
+              tenant_id,
+              action_type: action.tool_action_id ?? action.description,
+              status: 'PENDING_APPROVAL',
+              severity_level: assessment.severity ?? 'MEDIUM',
+              retry_count: 0,
+              affected_asset: { id: `asset-${action.sequence}`, class: 'CLOUD_RESOURCE', identifier: targetIdentifier, criticality: 7 },
+              ai_reasoning: action.reasoning,
+              ai_params: action.api_params,
+              blast_radius: action.blast_radius,
+              rollback_description: action.rollback_spec?.description,
+              created_at: now,
+              updated_at: now,
+            });
           }
         }
       }
@@ -135,22 +156,23 @@ router.post('/:tenant_id/ingest', async (req: Request, res: Response) => {
 
     return res.status(200).json({
       success: true,
-      event_id: result.incident_id ?? event.id,
+      incident_id: result.incident_id ?? null,
+      filtered_out: result.filtered_out,
+      filter_reason: result.filter_reason ?? null,
       ai_reasoning: result.reasoning_response ? {
         is_threat: result.reasoning_response.is_threat,
         threat_type: result.reasoning_response.assessment?.threat_type,
         severity: result.reasoning_response.assessment?.severity,
         confidence: result.reasoning_response.assessment?.confidence,
         explanation: result.reasoning_response.explanation,
-        actions_approved: result.actions_approved,
-        actions_human_review: result.actions_human_review,
+        actions_pending_approval: result.actions_human_review,
         processing_ms: result.processing_ms,
       } : null,
     });
 
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error('[Pipeline] Error:', message);
+    console.error('[Webhook] Error:', message);
     return res.status(500).json({ success: false, error: message });
   }
 });

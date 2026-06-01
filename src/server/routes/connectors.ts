@@ -52,9 +52,11 @@ router.post('/', async (req: Request, res: Response) => {
   if (!tenant_id) return res.status(400).json({ error: 'tenant_id is required' });
 
   const resolvedRegions = regions && regions.length > 0 ? regions : ['us-east-1'];
-  const resolvedSources = (data_sources ?? ['CLOUDTRAIL', 'GUARDDUTY', 'SECURITY_HUB'])
+  // Default to CLOUDTRAIL only — GuardDuty and SecurityHub require paid subscriptions.
+  // CONFIG is listed as a source but has no poller implementation yet.
+  const resolvedSources = (data_sources ?? ['CLOUDTRAIL'])
     .map((s) => s.toUpperCase())
-    .filter((s) => s in AwsDataSource) as AwsDataSource[];
+    .filter((s) => s === 'CLOUDTRAIL' || s === 'GUARDDUTY' || s === 'SECURITY_HUB') as AwsDataSource[];
 
   // Verify the role is assumable before registering
   console.log(`[Connector] Verifying role: ${role_arn}`);
@@ -96,6 +98,20 @@ router.post('/', async (req: Request, res: Response) => {
   };
 
   registerConnector(connector);
+
+  // Persist to DB if enabled — so connectors survive server restarts
+  if (process.env['DB_ENABLED'] === 'true') {
+    try {
+      const { connectorsRepo } = await import('../../database/repositories.js');
+      const { tenantsRepo } = await import('../../database/repositories.js');
+      // Ensure tenant exists
+      await tenantsRepo.create(tenant_id, tenant_id);
+      await connectorsRepo.create(connector as unknown as Record<string, unknown>);
+      console.log(`[Connector] Persisted to database: ${connector.id}`);
+    } catch (err) {
+      console.error('[Connector] Failed to persist to DB:', err instanceof Error ? err.message : err);
+    }
+  }
 
   console.log(`[Connector] Registered: ${connector.id} for account ${account_id} in ${resolvedRegions.join(', ')}`);
   console.log(`[Connector] Monitoring: ${resolvedSources.join(', ')}`);

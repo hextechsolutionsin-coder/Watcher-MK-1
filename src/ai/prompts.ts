@@ -14,6 +14,7 @@ import {
   NormalizedEvent,
   TenantConfig,
 } from '../types/index.js';
+import { getEnvironmentFacts, buildKnownIpsContext } from '../pipeline/environment-config.js';
 
 // ============================================================================
 // System Prompt
@@ -99,6 +100,8 @@ export function buildReactivePrompt(request: ReasoningRequest): string {
 Analyze the following AWS security event and determine if it represents a genuine threat. If it does, generate a specific response plan using the available tools.
 </task>
 
+${buildKnownFactsSection()}
+
 <event>
 Source: ${event.source}
 Event Type: ${event.event_type}
@@ -126,6 +129,8 @@ Raw Event Data:
 ${JSON.stringify(event.raw_payload, null, 2).slice(0, 2000)}
 </event>
 
+${buildExistingIncidentSection(event.raw_payload as Record<string, unknown>)}
+
 ${buildEnvironmentSection(env)}
 
 ${buildToolsSection(tools)}
@@ -136,12 +141,14 @@ ${buildConfigSection(config)}
 
 <instructions>
 1. Analyze the event in the context of this specific AWS environment
-2. Consider: Is this behavior normal for this actor and resource? Is the source IP suspicious? Is the action dangerous given the target resource's criticality?
-3. If this is a threat: determine severity, map to MITRE ATT&CK, and generate a specific response plan
-4. Only include actions that are available in the tool capabilities above
-5. For each action, specify the exact AWS API call and parameters
-6. Include rollback specifications for any write actions
-7. Write your explanation for a CISO who needs to approve or understand the response
+2. If this event matches a known fact (e.g., a known trusted account), dismiss it immediately with a one-line explanation. Do NOT write long essays for benign events.
+3. Keep your response under 200 words for non-threats. Only write detailed analysis for actual threats.
+4. Consider: Is this behavior normal for this actor and resource? Is the source IP suspicious? Is the action dangerous given the target resource's criticality?
+5. If this is a threat: determine severity, map to MITRE ATT&CK, and generate a specific response plan
+6. Only include actions that are available in the tool capabilities above
+7. For each action, specify the exact AWS API call and parameters
+8. Include rollback specifications for any write actions
+9. Write your explanation for a CISO who needs to approve or understand the response
 </instructions>`;
 }
 
@@ -239,6 +246,44 @@ ${request.recent_events.slice(0, 30).map(formatEventSummary).join('\n')}
 // ============================================================================
 // Section Builders
 // ============================================================================
+
+function buildExistingIncidentSection(rawPayload: Record<string, unknown>): string {
+  const existing = rawPayload['_watcher_existing_incident'] as Record<string, unknown> | undefined;
+  if (!existing) return '';
+
+  return `<existing_incident>
+IMPORTANT: This actor already has an open incident (ID: ${existing['id']}).
+Threat type: ${existing['threat_type']}
+Evidence collected so far: ${existing['evidence_count']} events
+Incident opened: ${existing['created_at']}
+
+Decide: Is this new event a continuation of the same attack (add to existing incident) or a distinct new threat?
+If continuation — reference the existing incident in your response and focus your action plan on the NEW step only.
+If new threat — treat independently.
+</existing_incident>`;
+}
+
+function buildKnownFactsSection(): string {
+  const facts = getEnvironmentFacts();
+  const knownIpsContext = buildKnownIpsContext();
+
+  const allFacts = [
+    ...facts,
+    ...(knownIpsContext ? [knownIpsContext] : []),
+  ];
+
+  if (allFacts.length === 0) return '';
+
+  return `<known_facts>
+${allFacts.map((f) => `- ${f}`).join('\n')}
+
+IP ADDRESS REASONING RULES:
+- If the source IP matches a known trusted IP above: lower your threat confidence by 20-30 points for that factor alone. Still flag if the ACTION itself is dangerous (e.g. CreateUser, StopLogging) regardless of IP.
+- If the source IP is NOT in the known list and the actor is root or an admin: treat as higher risk.
+- Off-hours activity (outside 06:00-22:00 UTC) from even trusted IPs warrants a note in your reasoning.
+- A trusted IP does NOT mean the action is safe — it means the identity is more likely legitimate.
+</known_facts>`;
+}
 
 function buildEnvironmentSection(env: EnvironmentContext): string {
   const criticalAssets = env.critical_assets.slice(0, 15);

@@ -45,6 +45,13 @@ export function rejectAction(actionId: string, approverId: string, reason: strin
   });
 }
 
+export function retryAction(actionId: string) {
+  return apiFetch<unknown>(`${API_BASE}/approvals/${actionId}/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 // ── Actions ───────────────────────────────────────────────────────────────────
 
 export function fetchActions(params?: { type?: string; outcome?: string }) {
@@ -104,4 +111,102 @@ export function fetchTrustLevel() {
 
 export function fetchRollbacks() {
   return apiFetch<unknown[]>(`${API_BASE}/pipeline/rollbacks`);
+}
+
+// ── Known IPs ─────────────────────────────────────────────────────────────────
+
+export function fetchKnownIps() {
+  return apiFetch<unknown[]>(`${API_BASE}/pipeline/known-ips`);
+}
+
+export function addKnownIp(body: { ip: string; label: string; owner: string; notes?: string }) {
+  return apiFetch<unknown>(`${API_BASE}/pipeline/known-ips`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteKnownIp(id: string) {
+  return apiFetch<unknown>(`${API_BASE}/pipeline/known-ips/${id}`, { method: 'DELETE' });
+}
+
+// ── Environment Facts ─────────────────────────────────────────────────────────
+
+export function fetchEnvironmentFacts() {
+  return apiFetch<unknown[]>(`${API_BASE}/pipeline/facts`);
+}
+
+export function addEnvironmentFact(fact: string) {
+  return apiFetch<unknown>(`${API_BASE}/pipeline/facts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fact }),
+  });
+}
+
+export function deleteEnvironmentFact(index: number) {
+  return apiFetch<unknown>(`${API_BASE}/pipeline/facts/${index}`, { method: 'DELETE' });
+}
+
+// ── Polled Events ─────────────────────────────────────────────────────────────
+
+export function fetchPolledEvents(params?: {
+  status?: string;
+  source?: string;
+  incident_id?: string;
+  event_id?: string;
+  limit?: number;
+}) {
+  const url = new URL(`${API_BASE}/events`, window.location.origin);
+  if (params?.status) url.searchParams.set('status', params.status);
+  if (params?.source) url.searchParams.set('source', params.source);
+  if (params?.incident_id) url.searchParams.set('incident_id', params.incident_id);
+  if (params?.event_id) url.searchParams.set('event_id', params.event_id);
+  if (params?.limit) url.searchParams.set('limit', String(params.limit));
+  return apiFetch<unknown[]>(url.toString());
+}
+
+export function fetchPolledEventStats() {
+  return apiFetch<unknown>(`${API_BASE}/events/stats`);
+}
+
+export function fetchPolledEventById(eventId: string) {
+  return apiFetch<unknown>(`${API_BASE}/events/${eventId}`);
+}
+
+export function fetchSuppressions() {
+  return apiFetch<unknown[]>(`${API_BASE}/suppressions`);
+}
+
+export function createSuppression(body: {
+  type: string;
+  value: string;
+  reason: string;
+  created_by?: string;
+}) {
+  return apiFetch<unknown>(`${API_BASE}/suppressions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteSuppression(id: string) {
+  return apiFetch<unknown>(`${API_BASE}/suppressions/${id}`, { method: 'DELETE' });
+}
+
+// ── Feedback ──────────────────────────────────────────────────────────────────
+
+export function submitFeedback(incidentId: string, body: {
+  verdict: 'TRUE_POSITIVE' | 'FALSE_POSITIVE' | 'SEVERITY_WRONG';
+  correct_severity?: string;
+  notes?: string;
+  analyst_id?: string;
+}) {
+  return apiFetch<unknown>(`${API_BASE}/incidents/${incidentId}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }

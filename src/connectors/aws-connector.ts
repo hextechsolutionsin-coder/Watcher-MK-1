@@ -64,13 +64,15 @@ export interface CloudTrailPollerConfig {
   region: string;
   tenantId: string;
   accountId: string;
-  /** How far back to look on first poll (minutes). Default: 60. */
+  /** How far back to look on first poll (minutes). Default: 90 days. */
   lookbackMinutes: number;
 }
 
 export class CloudTrailPoller {
   private readonly config: CloudTrailPollerConfig;
   private lastPollTime: Date;
+  private isFirstPoll: boolean = true;
+  private catchUpComplete: boolean = false;
 
   constructor(config: CloudTrailPollerConfig) {
     this.config = config;
@@ -78,8 +80,16 @@ export class CloudTrailPoller {
   }
 
   /**
-   * Polls CloudTrail for events since the last poll.
-   * Returns normalized raw events ready for the pipeline.
+   * Polls CloudTrail for write events since the last poll.
+   *
+   * First poll (catch-up): fetches ALL write events from lookbackMinutes ago.
+   *   - Paginates through everything — no 50-event cap
+   *   - Uses latest event timestamp as next startTime
+   *   - Logs progress every 100 events
+   *
+   * Subsequent polls (incremental): fetches only new events since last seen timestamp.
+   *   - Fast, low-volume, runs every 60 seconds
+   *   - Advances startTime based on latest event seen, not wall clock
    */
   async poll(): Promise<RawAwsEvent[]> {
     const credentials = createAssumedRoleCredentials(this.config.roleArn, this.config.region);
@@ -87,46 +97,103 @@ export class CloudTrailPoller {
 
     const startTime = this.lastPollTime;
     const endTime = new Date();
-
-    const input: LookupEventsCommandInput = {
-      StartTime: startTime,
-      EndTime: endTime,
-      MaxResults: 50,
-    };
-
     const events: RawAwsEvent[] = [];
 
+    if (this.isFirstPoll) {
+      const lookbackHours = Math.round(this.config.lookbackMinutes / 60);
+      console.log(`[CloudTrailPoller] Starting catch-up poll for ${this.config.accountId} — fetching last ${lookbackHours}h of write events`);
+    }
+
     try {
-      const response = await client.send(new LookupEventsCommand(input));
+      let nextToken: string | undefined;
+      let pageCount = 0;
+      // On first poll: no page limit — fetch everything
+      // On subsequent polls: cap at 10 pages (500 events) per cycle
+      const MAX_PAGES = this.isFirstPoll ? 1000 : 10;
+      let latestEventTime: Date | null = null;
 
-      for (const event of response.Events ?? []) {
-        if (!event.CloudTrailEvent) continue;
+      do {
+        const input: LookupEventsCommandInput = {
+          StartTime: startTime,
+          EndTime: endTime,
+          MaxResults: 50,
+          LookupAttributes: [
+            { AttributeKey: 'ReadOnly', AttributeValue: 'false' },
+          ],
+          ...(nextToken ? { NextToken: nextToken } : {}),
+        };
 
-        let payload: Record<string, unknown>;
-        try {
-          payload = JSON.parse(event.CloudTrailEvent) as Record<string, unknown>;
-        } catch {
-          continue;
+        const response = await client.send(new LookupEventsCommand(input));
+
+        for (const event of response.Events ?? []) {
+          if (!event.CloudTrailEvent) continue;
+
+          let payload: Record<string, unknown>;
+          try {
+            payload = JSON.parse(event.CloudTrailEvent) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+
+          const eventTime = event.EventTime;
+          if (eventTime && (!latestEventTime || eventTime > latestEventTime)) {
+            latestEventTime = eventTime;
+          }
+
+          events.push({
+            source: AwsDataSource.CLOUDTRAIL,
+            connector_id: `cloudtrail-${this.config.accountId}`,
+            tenant_id: this.config.tenantId,
+            account_id: this.config.accountId,
+            region: this.config.region,
+            raw_payload: payload,
+            received_at: new Date().toISOString(),
+          });
         }
 
-        events.push({
-          source: AwsDataSource.CLOUDTRAIL,
-          connector_id: `cloudtrail-${this.config.accountId}`,
-          tenant_id: this.config.tenantId,
-          account_id: this.config.accountId,
-          region: this.config.region,
-          raw_payload: payload,
-          received_at: new Date().toISOString(),
-        });
+        nextToken = response.NextToken;
+        pageCount++;
+
+        // Log catch-up progress every 5 pages (250 events)
+        if (this.isFirstPoll && pageCount % 5 === 0 && events.length > 0) {
+          console.log(`[CloudTrailPoller] Catch-up progress: ${events.length} events fetched so far (${pageCount} pages)...`);
+        }
+
+        if (pageCount >= MAX_PAGES) {
+          if (this.isFirstPoll) {
+            console.log(`[CloudTrailPoller] Catch-up complete: ${events.length} events fetched (${pageCount} pages)`);
+          }
+          break;
+        }
+
+      } while (nextToken);
+
+      // Advance lastPollTime to latest event seen (or endTime if no events)
+      // This ensures next poll starts exactly where we left off — no gaps, no duplicates
+      if (latestEventTime) {
+        this.lastPollTime = new Date(latestEventTime.getTime() + 1);
+      } else {
+        this.lastPollTime = endTime;
       }
 
-      this.lastPollTime = endTime;
+      if (events.length > 0) {
+        const mode = this.isFirstPoll ? 'catch-up' : 'incremental';
+        console.log(`[CloudTrailPoller] [${mode}] ${events.length} write events from ${this.config.accountId} — next poll from ${this.lastPollTime.toISOString()}`);
+      }
+
+      this.isFirstPoll = false;
+      this.catchUpComplete = true;
+
     } catch (err) {
-      // Log but don't throw — polling failures are non-fatal
       console.error(`[CloudTrailPoller] Poll failed for ${this.config.accountId}:`, err);
     }
 
     return events;
+  }
+
+  /** Returns true after the first catch-up poll has completed */
+  isCatchUpComplete(): boolean {
+    return this.catchUpComplete;
   }
 }
 
