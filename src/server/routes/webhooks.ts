@@ -130,7 +130,7 @@ router.post('/:tenant_id/ingest', async (req: Request, res: Response) => {
           for (const action of resp.action_plan.actions) {
             const targetIdentifier =
               String(action.api_params?.['UserName'] ?? '') ||
-              String(action.api_params?.['InstanceIds']?.[0] ?? '') ||
+              String((action.api_params?.['InstanceIds'] as string[] | undefined)?.[0] ?? '') ||
               (assessment.affected_assets[0] ?? 'unknown');
 
             addAction({

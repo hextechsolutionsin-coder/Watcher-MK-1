@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "Snyk": {
+      "command": "npx",
+      "args": ["-y", "snyk@latest", "mcp", "-t", "stdio"],
+      "env": {},
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}

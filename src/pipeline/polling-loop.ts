@@ -80,7 +80,7 @@ function writeResultToStore(result: PipelineResult, tenantId: string, actorArn?:
       const targetIdentifier =
         String(action.api_params?.['UserName'] ?? '') ||
         String(action.api_params?.['InstanceId'] ?? '') ||
-        String(action.api_params?.['InstanceIds']?.[0] ?? '') ||
+        String((action.api_params?.['InstanceIds'] as string[] | undefined)?.[0] ?? '') ||
         (assessment.affected_assets[action.sequence - 1] ?? assessment.affected_assets[0] ?? 'unknown');
 
       addAction({
