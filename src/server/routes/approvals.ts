@@ -358,8 +358,9 @@ async function executeApprovedAction(
     case 'aws:ec2:stop-instance':
     case 'STOP_INSTANCE':
     case 'ISOLATE_HOST': {
-      const instanceId = aiParams?.['InstanceIds']?.[0]
-        ? String((aiParams['InstanceIds'] as string[])[0])
+      const instanceIds = aiParams?.['InstanceIds'] as string[] | undefined;
+      const instanceId = instanceIds?.[0]
+        ? String(instanceIds[0])
         : rawIdentifier.includes('/') ? rawIdentifier.split('/').pop()! : rawIdentifier;
 
       const result = await awsClient.execute('ec2', 'StopInstances', {

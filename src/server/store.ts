@@ -10,7 +10,7 @@
  * - polled_events uses push (O(1)) not unshift (O(n)); newest-first sort on read
  */
 
-import type { PolledEventStatus } from './store.js';
+
 
 export interface StoreIncident {
   id: string;
