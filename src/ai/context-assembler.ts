@@ -20,6 +20,8 @@ import {
   TenantConfig,
   TrustLevel,
 } from '../types/index.js';
+import { SemanticMemoryProvider, EntityProfile, SemanticSearchResult } from '../memory/types.js';
+import { MemoryFormatter } from '../memory/memory-formatter.js';
 
 // ============================================================================
 // Interfaces
@@ -111,6 +113,18 @@ export class ContextAssembler {
   }
 
   /**
+   * Duck-typing check: determines if the injected MemoryProvider also implements
+   * SemanticMemoryProvider (has semanticSearch, getEntityProfile, getPatternSummary).
+   */
+  private isSemanticProvider(provider: MemoryProvider): provider is SemanticMemoryProvider {
+    return (
+      'semanticSearch' in provider &&
+      'getEntityProfile' in provider &&
+      'getPatternSummary' in provider
+    );
+  }
+
+  /**
    * Assembles context for a REACTIVE reasoning request (triggered by an event).
    */
   async assembleReactive(
@@ -132,10 +146,32 @@ export class ContextAssembler {
       this.eventsProvider.getRecentEvents(tenantId, ContextAssembler.MAX_RECENT_EVENTS),
     ]);
 
-    // Filter memory to entries relevant to this event type or affected assets
-    const relevantMemory = this.filterRelevantMemory(memory, event);
+    let relevantMemory: ReasoningMemoryEntry[];
+    let actorProfile: EntityProfile | null = null;
+    let targetProfile: EntityProfile | null = null;
 
-    return {
+    if (this.isSemanticProvider(this.memoryProvider)) {
+      // Semantic path: use semanticSearch for memory retrieval
+      const searchQuery = MemoryFormatter.buildSearchQuery(event);
+      const semanticResults = await this.memoryProvider.semanticSearch(tenantId, searchQuery, {
+        limit: ContextAssembler.MAX_MEMORY_ENTRIES,
+      });
+      relevantMemory = semanticResults.map((r) => r.entry);
+
+      // Retrieve entity profiles for actor and target
+      [actorProfile, targetProfile] = await Promise.all([
+        this.memoryProvider.getEntityProfile(tenantId, event.actor.identifier),
+        this.memoryProvider.getEntityProfile(tenantId, event.target.resource_id),
+      ]);
+    } else {
+      // Fallback path: use existing keyword-based filtering
+      relevantMemory = this.filterRelevantMemory(memory, event);
+    }
+
+    const request: ReasoningRequest & {
+      actorProfile?: EntityProfile | null;
+      targetProfile?: EntityProfile | null;
+    } = {
       id: generateId(),
       tenant_id: tenantId,
       mode: ReasoningMode.REACTIVE,
@@ -147,6 +183,15 @@ export class ContextAssembler {
       tenant_config: config,
       created_at: new Date().toISOString(),
     };
+
+    if (actorProfile) {
+      request.actorProfile = actorProfile;
+    }
+    if (targetProfile) {
+      request.targetProfile = targetProfile;
+    }
+
+    return request;
   }
 
   /**
@@ -164,7 +209,9 @@ export class ContextAssembler {
       this.eventsProvider.getRecentEvents(tenantId, ContextAssembler.MAX_RECENT_EVENTS),
     ]);
 
-    return {
+    const request: ReasoningRequest & {
+      patternSummary?: SemanticSearchResult[];
+    } = {
       id: generateId(),
       tenant_id: tenantId,
       mode: ReasoningMode.PROACTIVE,
@@ -176,6 +223,16 @@ export class ContextAssembler {
       tenant_config: config,
       created_at: new Date().toISOString(),
     };
+
+    // When semantic provider available: include pattern summary for unresolved patterns
+    if (this.isSemanticProvider(this.memoryProvider)) {
+      const patternSummary = await this.memoryProvider.getPatternSummary(tenantId);
+      if (patternSummary.length > 0) {
+        request.patternSummary = patternSummary;
+      }
+    }
+
+    return request;
   }
 
   /**

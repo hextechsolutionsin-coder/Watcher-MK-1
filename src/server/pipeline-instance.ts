@@ -18,6 +18,8 @@ import { InMemoryIncidentStore } from '../pipeline/incident-engine.js';
 import { InMemoryApprovalWorkflow, NoopApprovalNotifier } from '../pipeline/approval-workflow.js';
 import { EnvironmentModelService } from '../environment/environment-model.js';
 import { MemoryStore } from '../memory/memory-store.js';
+import { MemoryLayer } from '../memory/memory-layer.js';
+import { loadMemoryLayerConfig } from '../memory/memory-layer-config.js';
 import { TrustLevel, TenantConfig } from '../types/index.js';
 
 import type {
@@ -232,8 +234,8 @@ function makeDefaultTenantConfig(tenantId: string): TenantConfig {
 // Context providers backed by in-memory stores
 // ============================================================================
 
-const memoryDb = new InMemoryDbClient();
-const memoryStore = new MemoryStore(memoryDb);
+const memoryLayerConfig = loadMemoryLayerConfig();
+const memoryLayer = new MemoryLayer(memoryLayerConfig);
 const incidentStore = new InMemoryIncidentStore();
 const tenantConfigs = new Map<string, TenantConfig>();
 const recentEvents: import('../types/index.js').NormalizedEvent[] = [];
@@ -252,11 +254,7 @@ const envProvider: EnvironmentContextProvider = {
   },
 };
 
-const memoryProvider: MemoryProvider = {
-  async getMemoryEntriesByTenant(tenantId, opts) {
-    return memoryStore.getMemoryEntriesByTenant(tenantId, opts);
-  },
-};
+const memoryProvider: MemoryProvider = memoryLayer;
 
 const toolProvider: ToolCapabilityProvider = {
   async getCapabilitiesForTenant(_tenantId) {
@@ -396,4 +394,13 @@ export const pipeline = new EventPipeline({
   config: { skipFastFilter: true }, // Skip filter for webhook events — treat all as interesting
 });
 
-export { incidentStore, approvalWorkflow, auditLog };
+// Initialize the memory layer (connects to Supermemory or enters fallback mode)
+memoryLayer.initialize().catch((err) => {
+  console.error('[Pipeline] Failed to initialize MemoryLayer:', err);
+});
+
+export { incidentStore, approvalWorkflow, auditLog, memoryLayer };
+
+export async function shutdownPipeline(): Promise<void> {
+  await memoryLayer.shutdown();
+}

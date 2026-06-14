@@ -284,6 +284,22 @@ export interface EnvironmentContext {
 // AI Reasoning Engine
 // ============================================================================
 
+/** Entity profile from semantic memory layer. */
+export interface EntityProfile {
+  entityId: string;
+  tenantId: string;
+  /** Long-term behavioral patterns (e.g., "This IAM user typically accesses S3 in us-east-1") */
+  staticFacts: string[];
+  /** Recent activity summary (e.g., "Recently involved in 2 credential rotation incidents") */
+  dynamicContext: string[];
+}
+
+/** Semantic search result with relevance scoring. */
+export interface SemanticSearchResultEntry {
+  entry: ReasoningMemoryEntry;
+  relevanceScore: number;
+}
+
 /** Full context assembled for an AI reasoning request. */
 export interface ReasoningRequest {
   id: string;
@@ -299,6 +315,10 @@ export interface ReasoningRequest {
   tool_capabilities: ToolCapabilityProfile[];
   tenant_config: TenantConfig;
   created_at: string;
+  // Semantic memory context (optional, present when SemanticMemoryProvider is available)
+  actorProfile?: EntityProfile;
+  targetProfile?: EntityProfile;
+  patternSummary?: SemanticSearchResultEntry[];
 }
 
 /** Full output from the AI Reasoning Engine. */

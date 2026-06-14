@@ -13,6 +13,7 @@ import connectorsRouter from './routes/connectors.js';
 import downloadsRouter from './routes/downloads.js';
 import suppressionsRouter from './routes/suppressions.js';
 import eventsRouter from './routes/events.js';
+import memoryRouter from './routes/memory.js';
 import { pipeline } from './pipeline-instance.js';
 import { startPollingLoop, setWatcherAccountId } from '../pipeline/polling-loop.js';
 import { hydrateFromDatabase } from './store.js';
@@ -52,6 +53,7 @@ app.use('/api/v1/pipeline', authMiddleware, pipelineRouter);
 app.use('/api/v1/connectors', authMiddleware, connectorsRouter);
 app.use('/api/v1/suppressions', authMiddleware, suppressionsRouter);
 app.use('/api/v1/events', authMiddleware, eventsRouter);
+app.use('/api/v1/memory', memoryRouter); // public health check for Supermemory status
 app.use('/api/v1/downloads', downloadsRouter); // public — customers need this before auth
 
 // ── Server startup ────────────────────────────────────────────────────────────
