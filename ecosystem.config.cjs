@@ -13,7 +13,7 @@ module.exports = {
     {
       name: 'watcher-mk1',
       script: 'dist/server/index.js',
-      cwd: '/opt/watcher-mk1',
+      cwd: __dirname,
       instances: 1,
       autorestart: true,
       watch: false,
