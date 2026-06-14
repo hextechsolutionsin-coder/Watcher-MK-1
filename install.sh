@@ -578,7 +578,8 @@ generate_env() {
   set_env_value "DB_USER" "${DB_USER}"
   set_env_value "DB_PASSWORD" "${DB_PASS}"
   set_env_value "JWT_SECRET" "${jwt_secret}"
-  set_env_value "AUTH_ENABLED" "true"
+  set_env_value "AUTH_ENABLED" "false"
+  set_env_value "CORS_ORIGIN" "*"
   set_env_value "SUPERMEMORY_BASE_URL" "http://localhost:6767"
   set_env_value "SUPERMEMORY_LLM_PROVIDER" "ollama"
 
@@ -712,29 +713,69 @@ start_ollama() {
   fi
 
   success "Ollama service enabled and started."
+
+  # Pull embedding model if not already present (required by Supermemory)
+  if ! ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
+    info "Pulling nomic-embed-text model for Supermemory embeddings..."
+    if ! ollama pull nomic-embed-text; then
+      warn "Failed to pull nomic-embed-text. Supermemory may use its built-in embeddings instead."
+    else
+      success "nomic-embed-text model pulled successfully."
+    fi
+  else
+    success "nomic-embed-text model already available."
+  fi
 }
 
 # Start Supermemory server via PM2 on port 6767.
 # Uses PM2 idempotency: if the process already exists, restart it instead of
 # creating a duplicate entry.
+# Note: PORT must be explicitly set to 6767 to prevent Supermemory from reading
+# PORT=4000 from the project's .env file.
 start_supermemory() {
   info "Starting Supermemory via PM2 on port 6767..."
 
+  # Run interactive setup if Supermemory hasn't been configured yet
+  local supermemory_dir="${INSTALL_DIR}/.supermemory"
+  if [[ ! -f "${supermemory_dir}/env.enc" ]]; then
+    info "Supermemory requires initial configuration."
+    info "Running interactive setup (select OpenAI-compatible, enter 'sk-ollama' as key,"
+    info "set base URL to http://localhost:11434/v1, model: nomic-embed-text)..."
+    echo ""
+    (cd "${INSTALL_DIR}" && PORT=6767 npx supermemory@latest local)
+    echo ""
+    info "If Supermemory started successfully above, press Ctrl+C to continue installation."
+    info "If it failed, re-run the installer after fixing the issue."
+  fi
+
   if pm2 describe supermemory &>/dev/null; then
     info "Supermemory process already exists in PM2. Restarting..."
-    if ! pm2 restart supermemory; then
+    if ! pm2 restart supermemory --update-env; then
       error "Failed to restart Supermemory via PM2."
       exit ${EXIT_FAILURE}
     fi
   else
-    if ! PORT=6767 pm2 start npx --name supermemory -- supermemory@latest local; then
+    if ! PORT=6767 pm2 start npx --name supermemory --cwd "${INSTALL_DIR}" -- supermemory@latest local; then
       error "Failed to start Supermemory via PM2."
       error "Check PM2 logs: pm2 logs supermemory"
       exit ${EXIT_FAILURE}
     fi
   fi
 
-  success "Supermemory started via PM2 (port 6767)."
+  # Wait for Supermemory to become responsive
+  info "Waiting for Supermemory to start on port 6767..."
+  local sm_wait=0
+  while [[ ${sm_wait} -lt 15 ]]; do
+    if curl -sf --max-time 2 http://localhost:6767 >/dev/null 2>&1; then
+      success "Supermemory started via PM2 (port 6767)."
+      return 0
+    fi
+    sleep 2
+    sm_wait=$((sm_wait + 2))
+  done
+
+  warn "Supermemory may still be starting. Check: pm2 logs supermemory"
+  success "Supermemory process launched via PM2."
 }
 
 # Start the Watcher MK1 application via PM2 using ecosystem.config.cjs.
@@ -844,11 +885,20 @@ show_completion_summary() {
   echo "    Supermemory:  http://localhost:6767"
   echo ""
   echo "  Next Steps:"
-  echo "    1. Register an admin user:"
-  echo "       curl -X POST http://${host_ip}:4000/api/v1/auth/register ..."
-  echo "    2. Configure AWS credentials in .env (AWS_ACCESS_KEY_ID, etc.)"
-  echo "    3. Set up Nginx + SSL (see deploy/README.md, steps 7-8)"
-  echo "    4. Connect an AWS account via the UI"
+  echo "    1. Open port 4000 in your cloud security group/firewall"
+  echo "    2. Access the dashboard at http://<your-public-ip>:4000"
+  echo "    3. Configure AWS credentials in .env (AWS_ACCESS_KEY_ID, etc.)"
+  echo "    4. Set up Nginx + SSL (see deploy/README.md, steps 7-8)"
+  echo "    5. Connect an AWS account via the UI"
+  echo "    6. Enable auth later: set AUTH_ENABLED=true in .env"
+  echo ""
+  echo "  Auth is DISABLED by default (no login UI yet)."
+  echo "  To enable auth and register a user:"
+  echo "    sed -i 's|AUTH_ENABLED=false|AUTH_ENABLED=true|' .env"
+  echo "    pm2 restart watcher-mk1"
+  echo "    curl -X POST http://localhost:4000/api/v1/auth/register \\"
+  echo "      -H 'Content-Type: application/json' \\"
+  echo "      -d '{\"email\":\"admin@example.com\",\"password\":\"your-password\"}'"
   echo ""
   echo "══════════════════════════════════════════════════════════"
   echo ""

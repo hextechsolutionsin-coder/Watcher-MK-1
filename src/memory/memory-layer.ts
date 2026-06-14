@@ -65,7 +65,7 @@ export class MemoryLayer implements SemanticMemoryProvider, DatabaseClient {
   async initialize(): Promise<void> {
     try {
       // Probe Supermemory connectivity with a lightweight search call
-      await this.client.search.memories({ q: '', limit: 1 });
+      await this.client.search.memories({ q: 'health_check', limit: 1 });
       this.connected = true;
       console.info('[MemoryLayer] Connected to Supermemory at', this.config.baseUrl);
     } catch (error) {
