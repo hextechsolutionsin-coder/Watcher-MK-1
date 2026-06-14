@@ -19,13 +19,23 @@ credentials
 # Logs
 *.log
 npm-debug.log*
+/var/log/watcher-mk1/
+
+# PM2
+.pm2/
+ecosystem.config.cjs.bak
+
+# Temporary build/test artifacts
+tsc_output.txt
+tsc_exit.txt
 
 # OS
 .DS_Store
 Thumbs.db
 
-# IDE
-.vscode/settings.json
+# IDE / Tools
+.vscode/
+.kiro/
 .idea/
 
 # TypeScript
