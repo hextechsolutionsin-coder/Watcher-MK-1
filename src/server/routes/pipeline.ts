@@ -6,6 +6,7 @@ import {
   getKnownIps, addKnownIp, removeKnownIp,
   getEnvironmentFacts, addEnvironmentFact, removeEnvironmentFact,
 } from '../../pipeline/environment-config.js';
+import { memoryLayer } from '../memory-layer-instance.js';
 
 const router = Router();
 
@@ -188,13 +189,33 @@ router.post('/known-ips', (req: Request, res: Response) => {
   }
 
   const entry = addKnownIp({ ip, label, owner, notes, created_by: created_by ?? 'analyst' });
+
+  // Sync to Supermemory for semantic recall during threat analysis
+  const tenantId = (req as unknown as { user?: { tenant_id?: string } }).user?.tenant_id ?? process.env['DEFAULT_TENANT_ID'] ?? 'tenant-001';
+  memoryLayer.storeKnownIp(tenantId, ip, label, owner, notes).catch((err) => {
+    console.warn('[Pipeline] Failed to store known IP in Supermemory:', err instanceof Error ? err.message : err);
+  });
+
   res.status(201).json(entry);
 });
 
 /** DELETE /api/v1/pipeline/known-ips/:id */
 router.delete('/known-ips/:id', (req: Request, res: Response) => {
+  // Get the IP before removing (for Supermemory cleanup)
+  const allIps = getKnownIps();
+  const target = allIps.find((k) => k.id === String(req.params['id']));
+
   const removed = removeKnownIp(String(req.params['id']));
   if (!removed) return res.status(404).json({ error: 'Known IP not found' });
+
+  // Remove from Supermemory
+  if (target) {
+    const tenantId = (req as unknown as { user?: { tenant_id?: string } }).user?.tenant_id ?? process.env['DEFAULT_TENANT_ID'] ?? 'tenant-001';
+    memoryLayer.removeKnownIp(tenantId, target.ip).catch((err) => {
+      console.warn('[Pipeline] Failed to remove known IP from Supermemory:', err instanceof Error ? err.message : err);
+    });
+  }
+
   res.json({ success: true });
 });
 
@@ -214,6 +235,14 @@ router.post('/facts', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'fact is required' });
   }
   addEnvironmentFact(fact.trim());
+
+  // Sync to Supermemory
+  const tenantId = (req as unknown as { user?: { tenant_id?: string } }).user?.tenant_id ?? process.env['DEFAULT_TENANT_ID'] ?? 'tenant-001';
+  const facts = getEnvironmentFacts();
+  memoryLayer.storeEnvironmentFact(tenantId, fact.trim(), facts.length - 1).catch((err) => {
+    console.warn('[Pipeline] Failed to store environment fact in Supermemory:', err instanceof Error ? err.message : err);
+  });
+
   res.status(201).json({ success: true, fact: fact.trim() });
 });
 

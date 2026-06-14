@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { getSuppressions, addSuppression, removeSuppression } from '../../pipeline/suppressions.js';
 import type { SuppressionType } from '../../pipeline/suppressions.js';
+import { memoryLayer } from '../memory-layer-instance.js';
 
 const router = Router();
 
@@ -23,6 +24,13 @@ router.post('/', (req: Request, res: Response) => {
   }
 
   const rule = addSuppression({ type, value, reason, created_by: created_by ?? 'analyst' });
+
+  // Sync to Supermemory for semantic recall during threat analysis
+  const tenantId = (req as unknown as { user?: { tenant_id?: string } }).user?.tenant_id ?? process.env['DEFAULT_TENANT_ID'] ?? 'tenant-001';
+  memoryLayer.storeSuppression(tenantId, type, value, reason).catch((err) => {
+    console.warn('[Suppressions] Failed to store suppression in Supermemory:', err instanceof Error ? err.message : err);
+  });
+
   res.status(201).json(rule);
 });
 
