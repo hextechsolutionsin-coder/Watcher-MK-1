@@ -426,7 +426,7 @@ export class MemoryLayer implements SemanticMemoryProvider, DatabaseClient {
           content,
           containerTag: validatedTenantId,
           customId: recordId,
-          metadata,
+          metadata: metadata as Record<string, string | number | boolean | string[]>,
         });
       },
       async () => {
@@ -596,7 +596,7 @@ export class MemoryLayer implements SemanticMemoryProvider, DatabaseClient {
           content,
           containerTag: validatedTenantId,
           customId: id,
-          metadata,
+          metadata: metadata as Record<string, string | number | boolean | string[]>,
         });
       },
       async () => {
@@ -698,7 +698,7 @@ export class MemoryLayer implements SemanticMemoryProvider, DatabaseClient {
           content,
           containerTag: validatedTenantId,
           customId: incident.id,
-          metadata: metadata as unknown as Record<string, unknown>,
+          metadata: metadata as unknown as Record<string, string | number | boolean | string[]>,
         });
       },
       async () => {
@@ -752,7 +752,7 @@ export class MemoryLayer implements SemanticMemoryProvider, DatabaseClient {
           content,
           containerTag: validatedTenantId,
           customId: incidentId,
-          metadata: metadata as unknown as Record<string, unknown>,
+          metadata: metadata as Record<string, string | number | boolean | string[]>,
         });
       },
       async () => {
@@ -806,7 +806,7 @@ export class MemoryLayer implements SemanticMemoryProvider, DatabaseClient {
           content,
           containerTag: validatedTenantId,
           customId: incidentId,
-          metadata: metadata as unknown as Record<string, unknown>,
+          metadata: metadata as Record<string, string | number | boolean | string[]>,
         });
       },
       async () => {

@@ -16,9 +16,9 @@ describe('GET /api/v1/memory/health', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    jsonSpy = vi.fn();
+    jsonSpy = vi.fn().mockReturnThis();
     mockRes = {
-      json: jsonSpy,
+      json: jsonSpy as unknown as Response['json'],
     };
   });
 
@@ -27,7 +27,7 @@ describe('GET /api/v1/memory/health', () => {
 
     // Import fresh to get the route handler
     const { default: router } = await import('./memory.js');
-    const layer = router.stack.find((l: any) => l.route?.path === '/health');
+    const layer = (router as any).stack.find((l: any) => l.route?.path === '/health');
     const handler = layer?.route?.stack[0]?.handle;
 
     handler({} as Request, mockRes as Response, vi.fn());
@@ -44,7 +44,7 @@ describe('GET /api/v1/memory/health', () => {
     vi.mocked(memoryLayer.healthCheck).mockReturnValue('fallback');
 
     const { default: router } = await import('./memory.js');
-    const layer = router.stack.find((l: any) => l.route?.path === '/health');
+    const layer = (router as any).stack.find((l: any) => l.route?.path === '/health');
     const handler = layer?.route?.stack[0]?.handle;
 
     handler({} as Request, mockRes as Response, vi.fn());
@@ -61,7 +61,7 @@ describe('GET /api/v1/memory/health', () => {
     vi.mocked(memoryLayer.healthCheck).mockReturnValue('disconnected');
 
     const { default: router } = await import('./memory.js');
-    const layer = router.stack.find((l: any) => l.route?.path === '/health');
+    const layer = (router as any).stack.find((l: any) => l.route?.path === '/health');
     const handler = layer?.route?.stack[0]?.handle;
 
     handler({} as Request, mockRes as Response, vi.fn());
@@ -78,7 +78,7 @@ describe('GET /api/v1/memory/health', () => {
     vi.mocked(memoryLayer.healthCheck).mockReturnValue('connected');
 
     const { default: router } = await import('./memory.js');
-    const layer = router.stack.find((l: any) => l.route?.path === '/health');
+    const layer = (router as any).stack.find((l: any) => l.route?.path === '/health');
     const handler = layer?.route?.stack[0]?.handle;
 
     handler({} as Request, mockRes as Response, vi.fn());
