@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import path from 'path';
 import { testConnection } from '../database/connection.js';
 import { authRouter, authMiddleware } from './auth.js';
 import incidentsRouter from './routes/incidents.js';
@@ -22,7 +23,7 @@ const app = express();
 const PORT = parseInt(process.env['PORT'] ?? '4000', 10);
 
 app.use(cors({
-  origin: process.env['CORS_ORIGIN'] ?? 'http://localhost:5173',
+  origin: process.env['CORS_ORIGIN'] ?? '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
@@ -55,6 +56,15 @@ app.use('/api/v1/suppressions', authMiddleware, suppressionsRouter);
 app.use('/api/v1/events', authMiddleware, eventsRouter);
 app.use('/api/v1/memory', memoryRouter); // public health check for Supermemory status
 app.use('/api/v1/downloads', downloadsRouter); // public — customers need this before auth
+
+// ── Static frontend (serve built UI) ─────────────────────────────────────────
+const uiDistPath = path.resolve(__dirname, '../../ui/dist');
+app.use(express.static(uiDistPath));
+
+// SPA fallback: serve index.html for any non-API route (client-side routing)
+app.get('/{*splat}', (_req, res) => {
+  res.sendFile(path.join(uiDistPath, 'index.html'));
+});
 
 // ── Server startup ────────────────────────────────────────────────────────────
 async function start() {
