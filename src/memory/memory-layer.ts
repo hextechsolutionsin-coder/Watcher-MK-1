@@ -824,6 +824,166 @@ export class MemoryLayer implements SemanticMemoryProvider, DatabaseClient {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // Operational Context — Suppressions, Known IPs, Environment Facts
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Store a known IP in Supermemory so the AI can semantically recall it during
+   * threat analysis and reduce false positives from trusted sources.
+   */
+  async storeKnownIp(tenantId: string, ip: string, label: string, owner: string, notes?: string): Promise<void> {
+    const validatedTenantId = validateTenantId(tenantId);
+    const customId = `known-ip-${ip.replace(/[.:]/g, '-')}`;
+    const content = [
+      `[Known Trusted IP: ${ip}]`,
+      `Label: ${label}`,
+      `Owner: ${owner}`,
+      `Status: TRUSTED — activity from this IP is expected and legitimate.`,
+      notes ? `Notes: ${notes}` : '',
+      `This IP belongs to a known entity. Events originating from this IP should have significantly reduced threat scores unless the action itself is inherently dangerous (e.g., deleting security configurations, creating backdoor users). Normal operations from this IP are benign.`,
+    ].filter(Boolean).join('\n');
+
+    const metadata: Record<string, unknown> = {
+      type: 'known_ip',
+      ip_address: ip,
+      label,
+      owner,
+      tenant_id: validatedTenantId,
+      created_at: new Date().toISOString(),
+    };
+
+    await this.circuitBreaker.execute(
+      async () => {
+        await this.client.add({
+          content,
+          containerTag: validatedTenantId,
+          customId,
+          metadata: metadata as unknown as Record<string, string | number | boolean | string[]>,
+        });
+      },
+      async () => {
+        this.writeQueue.enqueue({
+          id: customId,
+          operation: 'add',
+          tenantId: validatedTenantId,
+          payload: content,
+          timestamp: new Date().toISOString(),
+          retryCount: 0,
+        });
+      }
+    );
+  }
+
+  /**
+   * Remove a known IP from Supermemory when it's no longer trusted.
+   */
+  async removeKnownIp(tenantId: string, ip: string): Promise<void> {
+    const validatedTenantId = validateTenantId(tenantId);
+    const customId = `known-ip-${ip.replace(/[.:]/g, '-')}`;
+
+    await this.circuitBreaker.execute(
+      async () => {
+        await this.client.add({
+          content: `[REMOVED] Known IP ${ip} is no longer trusted. Treat activity from this IP as unknown/external.`,
+          containerTag: validatedTenantId,
+          customId,
+          metadata: { type: 'known_ip_removed', ip_address: ip, tenant_id: validatedTenantId, removed_at: new Date().toISOString() } as unknown as Record<string, string | number | boolean | string[]>,
+        });
+      },
+      async () => { /* best effort */ }
+    );
+  }
+
+  /**
+   * Store a suppression rule in Supermemory so the AI understands why certain
+   * events are being suppressed and can reason about related patterns.
+   */
+  async storeSuppression(tenantId: string, type: string, value: string, reason: string): Promise<void> {
+    const validatedTenantId = validateTenantId(tenantId);
+    const customId = `suppression-${type.toLowerCase()}-${value.replace(/[^a-zA-Z0-9-]/g, '-')}`;
+    const content = [
+      `[Suppression Rule]`,
+      `Type: ${type}`,
+      `Value: ${value}`,
+      `Reason: ${reason}`,
+      `Events matching this suppression (${type} = ${value}) are intentionally ignored because: ${reason}.`,
+      `If you see events from this ${type.toLowerCase()}, they are known/expected behavior and should NOT be flagged as threats unless the event type indicates a genuinely dangerous action (e.g., disabling CloudTrail, deleting IAM policies).`,
+    ].join('\n');
+
+    const metadata: Record<string, unknown> = {
+      type: 'suppression',
+      suppression_type: type,
+      suppression_value: value,
+      reason,
+      tenant_id: validatedTenantId,
+      created_at: new Date().toISOString(),
+    };
+
+    await this.circuitBreaker.execute(
+      async () => {
+        await this.client.add({
+          content,
+          containerTag: validatedTenantId,
+          customId,
+          metadata: metadata as unknown as Record<string, string | number | boolean | string[]>,
+        });
+      },
+      async () => {
+        this.writeQueue.enqueue({
+          id: customId,
+          operation: 'add',
+          tenantId: validatedTenantId,
+          payload: content,
+          timestamp: new Date().toISOString(),
+          retryCount: 0,
+        });
+      }
+    );
+  }
+
+  /**
+   * Store an environment fact in Supermemory for contextual understanding
+   * during threat analysis.
+   */
+  async storeEnvironmentFact(tenantId: string, fact: string, index: number): Promise<void> {
+    const validatedTenantId = validateTenantId(tenantId);
+    const customId = `env-fact-${index}`;
+    const content = [
+      `[Environment Fact]`,
+      `Fact: ${fact}`,
+      `This is a known operational fact about the monitored environment. Use this context when reasoning about events — activity that aligns with known facts is less likely to be malicious.`,
+    ].join('\n');
+
+    const metadata: Record<string, unknown> = {
+      type: 'environment_fact',
+      fact_index: index,
+      tenant_id: validatedTenantId,
+      created_at: new Date().toISOString(),
+    };
+
+    await this.circuitBreaker.execute(
+      async () => {
+        await this.client.add({
+          content,
+          containerTag: validatedTenantId,
+          customId,
+          metadata: metadata as unknown as Record<string, string | number | boolean | string[]>,
+        });
+      },
+      async () => {
+        this.writeQueue.enqueue({
+          id: customId,
+          operation: 'add',
+          tenantId: validatedTenantId,
+          payload: content,
+          timestamp: new Date().toISOString(),
+          retryCount: 0,
+        });
+      }
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Private — Reconnection Logic
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -832,7 +992,7 @@ export class MemoryLayer implements SemanticMemoryProvider, DatabaseClient {
 
     this.reconnectTimer = setInterval(async () => {
       try {
-        await this.client.search.memories({ q: '', limit: 1 });
+        await this.client.search.memories({ q: 'health_check', limit: 1 });
         // Probe succeeded — restore connectivity
         this.connected = true;
         this.circuitBreaker.recordSuccess();
